@@ -1,0 +1,17 @@
+{
+    "type": "process",
+    "setting_id": "GP_MAKERGEAR_004",
+    "name": "0.25mm Draft @MakerGear M2 0.35 nozzle",
+    "from": "system",
+    "instantiation": "true",
+    "inherits": "fdm_process_makergear_common",
+    "layer_height": "0.25",
+    "outer_wall_speed": "40",
+    "inner_wall_speed": "65",
+    "sparse_infill_speed": "75",
+    "internal_solid_infill_speed": "65",
+    "top_shell_layers": "3",
+    "compatible_printers": [
+        "MakerGear M2 0.35 nozzle"
+    ]
+}

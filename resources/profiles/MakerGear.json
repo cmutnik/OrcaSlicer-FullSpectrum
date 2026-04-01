@@ -1,0 +1,57 @@
+{
+    "name": "MakerGear",
+    "version": "02.03.01.10",
+    "force_update": "0",
+    "description": "MakerGear configurations",
+    "machine_model_list": [
+        {
+            "name": "MakerGear M2",
+            "sub_path": "machine/MakerGear M2.json"
+        }
+    ],
+    "process_list": [
+        {
+            "name": "fdm_process_common",
+            "sub_path": "process/fdm_process_common.json"
+        },
+        {
+            "name": "fdm_process_makergear_common",
+            "sub_path": "process/fdm_process_makergear_common.json"
+        },
+        {
+            "name": "0.10mm Fine @MakerGear M2 0.35 nozzle",
+            "sub_path": "process/0.10mm Fine @MakerGear M2 0.35 nozzle.json"
+        },
+        {
+            "name": "0.15mm Optimal @MakerGear M2 0.35 nozzle",
+            "sub_path": "process/0.15mm Optimal @MakerGear M2 0.35 nozzle.json"
+        },
+        {
+            "name": "0.20mm Standard @MakerGear M2 0.35 nozzle",
+            "sub_path": "process/0.20mm Standard @MakerGear M2 0.35 nozzle.json"
+        },
+        {
+            "name": "0.25mm Draft @MakerGear M2 0.35 nozzle",
+            "sub_path": "process/0.25mm Draft @MakerGear M2 0.35 nozzle.json"
+        },
+        {
+            "name": "0.28mm Extra Draft @MakerGear M2 0.35 nozzle",
+            "sub_path": "process/0.28mm Extra Draft @MakerGear M2 0.35 nozzle.json"
+        }
+    ],
+    "filament_list": [],
+    "machine_list": [
+        {
+            "name": "fdm_machine_common",
+            "sub_path": "machine/fdm_machine_common.json"
+        },
+        {
+            "name": "fdm_makergear_common",
+            "sub_path": "machine/fdm_makergear_common.json"
+        },
+        {
+            "name": "MakerGear M2 0.35 nozzle",
+            "sub_path": "machine/MakerGear M2 0.35 nozzle.json"
+        }
+    ]
+}
