@@ -466,6 +466,7 @@ static const t_config_enum_values s_keys_map_WipeTowerWallType{
     {"circle", wtwCircle},
     {"hexagon", wtwHexagon},
     {"diamond", wtwDiamond},
+    {"star", wtwStar},
 };
 CONFIG_OPTION_ENUM_DEFINE_STATIC_MAPS(WipeTowerWallType)
 
@@ -5931,7 +5932,8 @@ void PrintConfigDef::init_fff_params()
                     "4. Rounded Rectangle: Rectangle with smooth rounded corners.\n"
                     "5. Circle: Circular cross-section for maximum smoothness.\n"
                     "6. Hexagon: Six-sided polygon for good structural properties.\n"
-                    "7. Diamond: Square rotated 45° for a different stress distribution.");
+                    "7. Diamond: Square rotated 45° for a different stress distribution.\n"
+                    "8. Star: Six-pointed star for a distinctive appearance.");
     def->enum_keys_map = &ConfigOptionEnum<WipeTowerWallType>::get_enum_values();
     def->enum_values.emplace_back("rectangle");
     def->enum_values.emplace_back("cone");
@@ -5940,6 +5942,7 @@ void PrintConfigDef::init_fff_params()
     def->enum_values.emplace_back("circle");
     def->enum_values.emplace_back("hexagon");
     def->enum_values.emplace_back("diamond");
+    def->enum_values.emplace_back("star");
     def->enum_labels.emplace_back("Rectangle");
     def->enum_labels.emplace_back("Cone");
     def->enum_labels.emplace_back("Rib");
@@ -5947,6 +5950,7 @@ void PrintConfigDef::init_fff_params()
     def->enum_labels.emplace_back("Circle");
     def->enum_labels.emplace_back("Hexagon");
     def->enum_labels.emplace_back("Diamond");
+    def->enum_labels.emplace_back("Star");
     def->mode = comAdvanced;
     def->set_default_value(new ConfigOptionEnum<WipeTowerWallType>(wtwRectangle));
 

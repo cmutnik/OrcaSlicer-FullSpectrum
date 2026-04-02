@@ -372,7 +372,8 @@ enum CounterboreHoleBridgingOption {
      wtwRoundedRectangle,
      wtwCircle,
      wtwHexagon,
-     wtwDiamond
+     wtwDiamond,
+     wtwStar
  };
 
 static std::string bed_type_to_gcode_string(const BedType type)

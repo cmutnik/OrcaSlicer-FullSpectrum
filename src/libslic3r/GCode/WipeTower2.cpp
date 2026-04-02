@@ -585,6 +585,26 @@ Polygon generate_diamond_polygon(const Vec2f& wt_box_min, const Vec2f& wt_box_ma
     return res;
 }
 
+// 6-pointed star: 12 vertices alternating between outer radius and inner radius (50% of outer).
+// Outer points are at 90°, 150°, 210°, 270°, 330°, 30°; inner points are midway between them.
+Polygon generate_star_polygon(const Vec2f& wt_box_min, const Vec2f& wt_box_max)
+{
+    Vec2f center  = (wt_box_min + wt_box_max) / 2.f;
+    float rx      = (wt_box_max[0] - wt_box_min[0]) / 2.f;
+    float ry      = (wt_box_max[1] - wt_box_min[1]) / 2.f;
+    const float inner_ratio = 0.5f; // inner concave radius as fraction of outer
+    Polygon res;
+    for (int i = 0; i < 6; i++) {
+        float alpha_outer = float(M_PI) / 2.f + 2.f * float(M_PI) * i / 6.f;
+        float alpha_inner = alpha_outer + float(M_PI) / 6.f;
+        res.points.push_back(scaled(Vec2f(center[0] + rx * std::cos(alpha_outer),
+                                          center[1] + ry * std::sin(alpha_outer))));
+        res.points.push_back(scaled(Vec2f(center[0] + rx * inner_ratio * std::cos(alpha_inner),
+                                          center[1] + ry * inner_ratio * std::sin(alpha_inner))));
+    }
+    return res;
+}
+
 // Calculates length of extrusion line to extrude given volume
 static float volume_to_length(float volume, float line_width, float layer_height)
 {
@@ -2696,6 +2716,8 @@ Polygon WipeTower2::generate_support_rib_wall(WipeTowerWriter2&                 
         wall_polygon = generate_hexagon_polygon(wt_box.ld, wt_box.ru);
     else if (wall_type == (int) wtwDiamond)
         wall_polygon = generate_diamond_polygon(wt_box.ld, wt_box.ru);
+    else if (wall_type == (int) wtwStar)
+        wall_polygon = generate_star_polygon(wt_box.ld, wt_box.ru);
     else
         wall_polygon = generate_rectange_polygon(wt_box.ld, wt_box.ru);
     Polylines result_wall;
