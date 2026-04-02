@@ -2450,6 +2450,7 @@ void TabPrint::build()
         optgroup->append_single_option_line("wipe_tower_wall_type", "multimaterial_settings_prime_tower#wall-type");
         optgroup->append_single_option_line("wipe_tower_corner_radius", "multimaterial_settings_prime_tower#corner-radius");
         optgroup->append_single_option_line("wipe_tower_star_rotation", "multimaterial_settings_prime_tower#star-rotation");
+        optgroup->append_single_option_line("wipe_tower_layer_rotation", "multimaterial_settings_prime_tower#layer-rotation");
         optgroup->append_single_option_line("wipe_tower_cone_angle", "multimaterial_settings_prime_tower#stabilization-cone-apex-angle");
         optgroup->append_single_option_line("wipe_tower_extra_rib_length", "multimaterial_settings_prime_tower#extra-rib-length");
         optgroup->append_single_option_line("wipe_tower_rib_width", "multimaterial_settings_prime_tower#rib-width");

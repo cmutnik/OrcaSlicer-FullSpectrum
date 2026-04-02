@@ -196,7 +196,8 @@ private:
     bool   m_prime_tower_brim_chamfer          = true;   // Enable/disable brim chamfer
     float  m_prime_tower_brim_chamfer_max_width = 4.f;   // Max chamfer width (mm)
 	float  m_wipe_tower_rotation_angle = 0.f; // Wipe tower rotation angle in degrees (with respect to x axis)
-    float  m_internal_rotation  = 0.f;
+    float  m_internal_rotation    = 0.f;
+    float  m_layer_rotation_step  = 180.f; // degrees added to internal rotation each layer
 	float  m_y_shift			= 0.f;  // y shift passed to writer
 	float  m_z_pos 				= 0.f;  // Current Z position.
 	float  m_layer_height 		= 0.f; 	// Current layer height.

@@ -1359,6 +1359,7 @@ WipeTower2::WipeTower2(const PrintConfig&                     config,
     , m_change_pressure_value(config.ramming_pressure_advance_value)
     , m_ramming_width_ratio(config.ramming_line_width_ratio)
     , m_enable_arc_fitting(config.enable_arc_fitting)
+    , m_layer_rotation_step(config.wipe_tower_layer_rotation)
     , m_used_fillet(config.wipe_tower_fillet_wall)
     , m_rib_width(config.wipe_tower_rib_width)
     , m_corner_radius(config.wipe_tower_corner_radius)
@@ -2553,7 +2554,7 @@ void WipeTower2::generate(std::vector<std::vector<WipeTower::ToolChangeResult>>&
     for (const WipeTower2::WipeTowerInfo& layer : m_plan) {
         std::vector<WipeTower::ToolChangeResult> layer_result;
         set_layer(layer.z, layer.height, 0, false /*layer.z == m_plan.front().z*/, layer.z == m_plan.back().z);
-        m_internal_rotation += 180.f;
+        m_internal_rotation += m_layer_rotation_step;
 
         if (m_layer_info->depth < m_wipe_tower_depth - m_perimeter_width)
             m_y_shift = (m_wipe_tower_depth - m_layer_info->depth - m_perimeter_width) / 2.f;

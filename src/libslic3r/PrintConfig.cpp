@@ -5974,6 +5974,18 @@ void PrintConfigDef::init_fff_params()
     def->mode     = comAdvanced;
     def->set_default_value(new ConfigOptionFloat(2));
 
+    def           = this->add("wipe_tower_layer_rotation", coFloat);
+    def->label    = L("Layer rotation angle");
+    def->tooltip  = L("Degrees added to the prime tower's internal path direction with each layer. "
+                       "180° (default) alternates the direction every layer for maximum layer adhesion. "
+                       "90° rotates a quarter-turn each layer. "
+                       "0° keeps every layer in the same direction.");
+    def->sidetext = "°";
+    def->min      = 0;
+    def->max      = 180;
+    def->mode     = comAdvanced;
+    def->set_default_value(new ConfigOptionFloat(180));
+
     def           = this->add("wipe_tower_extra_rib_length", coFloat);
     def->label    = L("Extra rib length");
     def->tooltip  = L("Positive values can increase the size of the rib wall, while negative values can reduce the size. "
