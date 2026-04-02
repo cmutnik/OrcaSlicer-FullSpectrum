@@ -3017,6 +3017,7 @@ private:
     wxChoice                       *m_choice_b = nullptr;
     wxChoice                       *m_choice_c = nullptr;
     wxChoice                       *m_choice_d = nullptr;
+    wxChoice                       *m_mode_choice = nullptr;
     wxPanel                        *m_picker_a_container = nullptr;
     wxPanel                        *m_picker_b_container = nullptr;
     wxPanel                        *m_picker_a_swatch = nullptr;
@@ -3397,8 +3398,9 @@ void MixedFilamentConfigPanel::build_ui()
     const int component_a = std::clamp(int(m_mf.component_a), 1, int(m_num_physical));
     const int component_b = std::clamp(int(m_mf.component_b), 1, int(m_num_physical));
 
-    const int row_distribution_mode = int(MixedFilament::Simple);
-    m_mf.distribution_mode = row_distribution_mode;
+    // Preserve the distribution mode that was loaded from the project file,
+    // defaulting to Simple for brand-new rows.
+    const int row_distribution_mode = m_mf.distribution_mode;
 
     // Hidden data controls used as backing state for swatch pickers.
     m_choice_a = new wxChoice(this, wxID_ANY, wxDefaultPosition, wxDefaultSize, filament_choices);
@@ -3441,6 +3443,48 @@ void MixedFilamentConfigPanel::build_ui()
     create_component_picker(m_picker_a_container, m_picker_a_swatch, m_picker_a_label, _L("Click to choose a physical filament color"));
     create_component_picker(m_picker_b_container, m_picker_b_swatch, m_picker_b_label, _L("Click to choose a physical filament color"));
     update_component_picker_visuals();
+
+    // Distribution mode selector
+    {
+        auto *mode_row = new wxBoxSizer(wxHORIZONTAL);
+        auto *mode_label = new wxStaticText(this, wxID_ANY, _L("Mode"));
+        mode_label->SetForegroundColour(is_dark ? wxColour(236, 236, 236) : wxColour(20, 20, 20));
+        mode_row->Add(mode_label, 0, wxALIGN_CENTER_VERTICAL | wxRIGHT, gap);
+
+        wxArrayString mode_choices;
+        mode_choices.Add(_L("Simple"));                    // 0 → Simple
+        mode_choices.Add(_L("Layer cycle"));               // 1 → LayerCycle
+        mode_choices.Add(_L("Same-layer stripes"));        // 2 → SameLayerPointillisme
+        mode_choices.Add(_L("Same-layer alternating"));    // 3 → SameLayerAlternating
+        mode_choices.Add(_L("Wall alternating"));          // 4 → WallAlternating
+
+        m_mode_choice = new wxChoice(this, wxID_ANY, wxDefaultPosition, wxDefaultSize, mode_choices);
+        // Map internal enum values to dropdown indices:
+        // Simple=2→0, LayerCycle=0→1, SameLayerPointillisme=1→2,
+        // SameLayerAlternating=3→3, WallAlternating=4→4
+        auto mode_to_index = [](int mode) -> int {
+            switch (mode) {
+                case int(MixedFilament::LayerCycle):           return 1;
+                case int(MixedFilament::SameLayerPointillisme):return 2;
+                case int(MixedFilament::SameLayerAlternating): return 3;
+                case int(MixedFilament::WallAlternating):      return 4;
+                default:                                        return 0; // Simple
+            }
+        };
+        m_mode_choice->SetSelection(mode_to_index(row_distribution_mode));
+        m_mode_choice->SetToolTip(_L(
+            "Simple: basic layer-by-layer alternation.\n"
+            "Layer cycle: repeating A/B cadence across layers.\n"
+            "Same-layer stripes: splits each layer into parallel stripes "
+                "(orientation alternates each layer).\n"
+            "Same-layer alternating: splits each layer into parallel stripes "
+                "with fixed orientation; the starting filament shifts each layer "
+                "so even layers begin A,B,A... and odd layers begin B,A,B...\n"
+            "Wall alternating: outer wall and next inner wall carry opposite "
+                "filaments, swapping each layer to exploit light transmission."));
+        mode_row->Add(m_mode_choice, 1, wxALIGN_CENTER_VERTICAL);
+        root->Add(mode_row, 0, wxEXPAND | wxLEFT | wxRIGHT | wxTOP, gap);
+    }
 
     // Check for pattern mode
     const std::string normalized_pattern = MixedFilamentManager::normalize_manual_pattern(m_mf.manual_pattern);
@@ -3570,10 +3614,25 @@ void MixedFilamentConfigPanel::build_ui()
 
         m_mf.component_a = unsigned(a);
         m_mf.component_b = unsigned(b);
-        m_mf.distribution_mode = int(MixedFilament::Simple);
+
+        // Read distribution mode from the dropdown selector.
+        if (m_mode_choice) {
+            static const int index_to_mode[] = {
+                int(MixedFilament::Simple),
+                int(MixedFilament::LayerCycle),
+                int(MixedFilament::SameLayerPointillisme),
+                int(MixedFilament::SameLayerAlternating),
+                int(MixedFilament::WallAlternating),
+            };
+            const int sel = m_mode_choice->GetSelection();
+            m_mf.distribution_mode = (sel >= 0 && sel < int(std::size(index_to_mode)))
+                                    ? index_to_mode[sel]
+                                    : int(MixedFilament::Simple);
+        }
 
         const bool simple_mode = m_mf.distribution_mode == int(MixedFilament::Simple);
-        const bool same_layer_mode = m_mf.distribution_mode == int(MixedFilament::SameLayerPointillisme);
+        const bool same_layer_mode = m_mf.distribution_mode == int(MixedFilament::SameLayerPointillisme)
+                                  || m_mf.distribution_mode == int(MixedFilament::SameLayerAlternating);
         std::vector<unsigned int> preview_sequence;
 
         if (m_pattern_ctrl) {
@@ -3745,6 +3804,8 @@ void MixedFilamentConfigPanel::build_ui()
         m_choice_c->Bind(wxEVT_CHOICE, [apply_changes](wxCommandEvent&) { apply_changes(); });
     if (m_choice_d)
         m_choice_d->Bind(wxEVT_CHOICE, [apply_changes](wxCommandEvent&) { apply_changes(); });
+    if (m_mode_choice)
+        m_mode_choice->Bind(wxEVT_CHOICE, [apply_changes](wxCommandEvent&) { apply_changes(); });
     if (m_blend_selector)
         m_blend_selector->Bind(wxEVT_SLIDER, [apply_changes](wxCommandEvent&) { apply_changes(); });
 
@@ -3856,7 +3917,8 @@ void MixedFilamentConfigPanel::update_component_picker_visuals()
 void MixedFilamentConfigPanel::update_preview()
 {
     const bool simple_mode = m_mf.distribution_mode == int(MixedFilament::Simple);
-    const bool same_layer_mode = m_mf.distribution_mode == int(MixedFilament::SameLayerPointillisme);
+    const bool same_layer_mode = m_mf.distribution_mode == int(MixedFilament::SameLayerPointillisme)
+                              || m_mf.distribution_mode == int(MixedFilament::SameLayerAlternating);
     const std::string normalized_pattern = MixedFilamentManager::normalize_manual_pattern(m_mf.manual_pattern);
     const bool pattern_row_mode = !normalized_pattern.empty();
 

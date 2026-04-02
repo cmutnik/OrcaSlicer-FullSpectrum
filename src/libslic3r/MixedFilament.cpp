@@ -489,7 +489,7 @@ static bool parse_row_definition(const std::string &row,
         if (tok[0] == 'm' || tok[0] == 'M') {
             int parsed_mode = distribution_mode;
             if (parse_int_token(tok.substr(1), parsed_mode))
-                distribution_mode = clamp_int(parsed_mode, int(MixedFilament::LayerCycle), int(MixedFilament::Simple));
+                distribution_mode = clamp_int(parsed_mode, int(MixedFilament::LayerCycle), int(MixedFilament::WallAlternating));
             continue;
         }
         if (tok[0] == 'd' || tok[0] == 'D') {
@@ -1035,7 +1035,7 @@ std::string MixedFilamentManager::serialize_custom_entries()
            << (mf.pointillism_all_filaments ? 1 : 0) << ','
            << 'g' << normalized_ids << ','
            << 'w' << normalized_weights << ','
-           << 'm' << clamp_int(mf.distribution_mode, int(MixedFilament::LayerCycle), int(MixedFilament::Simple)) << ','
+           << 'm' << clamp_int(mf.distribution_mode, int(MixedFilament::LayerCycle), int(MixedFilament::WallAlternating)) << ','
            << 'd' << (mf.deleted ? 1 : 0) << ','
            << 'o' << (mf.origin_auto ? 1 : 0) << ','
            << 'u' << mf.stable_id;
@@ -1311,6 +1311,17 @@ unsigned int MixedFilamentManager::resolve_perimeter(unsigned int filament_id,
         return filament_id;
 
     const MixedFilament &mf = m_mixed[size_t(mixed_idx)];
+
+    if (mf.distribution_mode == int(MixedFilament::WallAlternating)) {
+        // Outer wall (perimeter_index == 0) leads with component_a on even layers;
+        // inner walls lead with component_b.  Swaps every layer to exploit
+        // translucency / light transmission between adjacent shells.
+        const int layer_pos = safe_mod(layer_index, 2);
+        const bool outer    = (perimeter_index <= 0);
+        const bool use_a    = outer ? (layer_pos == 0) : (layer_pos != 0);
+        return use_a ? mf.component_a : mf.component_b;
+    }
+
     if (!mf.manual_pattern.empty()) {
         const std::vector<std::string> pattern_groups = split_manual_pattern_groups(mf.manual_pattern);
         if (!pattern_groups.empty()) {
@@ -1344,6 +1355,19 @@ std::vector<unsigned int> MixedFilamentManager::ordered_perimeter_extruders(unsi
     }
 
     const MixedFilament &mf = m_mixed[size_t(mixed_idx)];
+
+    if (mf.distribution_mode == int(MixedFilament::WallAlternating)) {
+        // Return [outer_extruder, inner_extruder] in print order, swapping each layer.
+        const int layer_pos = safe_mod(layer_index, 2);
+        const unsigned int outer = (layer_pos == 0) ? mf.component_a : mf.component_b;
+        const unsigned int inner = (layer_pos == 0) ? mf.component_b : mf.component_a;
+        ordered.reserve(2);
+        ordered.emplace_back(outer);
+        if (inner != outer)
+            ordered.emplace_back(inner);
+        return ordered;
+    }
+
     if (!mf.manual_pattern.empty()) {
         const std::vector<std::string> pattern_groups = split_manual_pattern_groups(mf.manual_pattern);
         if (!pattern_groups.empty()) {

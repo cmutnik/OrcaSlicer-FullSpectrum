@@ -1556,7 +1556,8 @@ static bool split_masks_pointillism_stripes(const ExPolygons               &sour
                                             size_t                           layer_id,
                                             coord_t                          stripe_pitch,
                                             bool                             flip_orientation,
-                                            std::vector<ExPolygons>         &out_by_extruder)
+                                            std::vector<ExPolygons>         &out_by_extruder,
+                                            bool                             fix_orientation = false)
 {
     if (source_masks.empty() || sequence.empty() || num_physical == 0 || stripe_pitch <= 0)
         return false;
@@ -1579,10 +1580,19 @@ static bool split_masks_pointillism_stripes(const ExPolygons               &sour
 
     std::vector<Polygons> stripe_polygons_by_slot(slot_count);
     const bool vertical_base = (bbox.max.x() - bbox.min.x()) >= (bbox.max.y() - bbox.min.y());
-    // Alternate stripe orientation every layer so different faces of the model
-    // receive mixed-color variation instead of long single-direction bands.
-    const bool layer_alternates = (layer_id & 1) != 0;
-    bool       vertical = layer_alternates ? !vertical_base : vertical_base;
+    bool vertical;
+    if (fix_orientation) {
+        // SameLayerAlternating: keep stripe direction constant across layers so
+        // only the starting-filament phase shifts, producing the A,B,A... /
+        // B,A,B... interleave effect without also rotating stripe direction.
+        vertical = vertical_base;
+    } else {
+        // SameLayerPointillisme: alternate stripe orientation every layer so
+        // different faces receive mixed-colour variation rather than long
+        // single-direction bands.
+        const bool layer_alternates = (layer_id & 1) != 0;
+        vertical = layer_alternates ? !vertical_base : vertical_base;
+    }
     if (flip_orientation)
         vertical = !vertical;
 
@@ -1700,14 +1710,19 @@ static bool apply_pointillism_mixed_segmentation(PrintObject &print_object, std:
 
     std::vector<std::vector<unsigned int>> same_layer_sequences(mixed_rows.size());
     std::vector<bool>                      same_layer_row_active(mixed_rows.size(), false);
+    // true for SameLayerAlternating rows: fixed stripe orientation, phase shifts each layer.
+    std::vector<bool>                      same_layer_fix_orientation(mixed_rows.size(), false);
     std::vector<size_t>                    same_layer_row_indices;
     for (size_t mixed_idx = 0; mixed_idx < mixed_rows.size(); ++mixed_idx) {
         const MixedFilament &mf = mixed_rows[mixed_idx];
-        if (!mf.enabled || mf.distribution_mode != int(MixedFilament::SameLayerPointillisme))
+        const bool is_pointillisme  = mf.enabled && mf.distribution_mode == int(MixedFilament::SameLayerPointillisme);
+        const bool is_alternating   = mf.enabled && mf.distribution_mode == int(MixedFilament::SameLayerAlternating);
+        if (!is_pointillisme && !is_alternating)
             continue;
         same_layer_sequences[mixed_idx] = pointillism_sequence_for_row(mf, num_physical);
         if (unique_extruder_count(same_layer_sequences[mixed_idx], num_physical) >= 2) {
-            same_layer_row_active[mixed_idx] = true;
+            same_layer_row_active[mixed_idx]      = true;
+            same_layer_fix_orientation[mixed_idx] = is_alternating;
             same_layer_row_indices.emplace_back(mixed_idx);
         }
     }
@@ -1806,15 +1821,27 @@ static bool apply_pointillism_mixed_segmentation(PrintObject &print_object, std:
                     ++global_override_states;
             }
 
+            // Determine whether this row uses fixed stripe orientation (SameLayerAlternating).
+            bool fix_orient = same_layer_fix_orientation[size_t(mixed_idx)];
+            if (!same_layer_row_active[size_t(mixed_idx)]) {
+                // Row is overridden by another active row; inherit its orientation flag.
+                for (size_t idx : same_layer_row_indices) {
+                    if (&same_layer_sequences[idx] == sequence_ptr) {
+                        fix_orient = same_layer_fix_orientation[idx];
+                        break;
+                    }
+                }
+            }
+
             std::vector<ExPolygons> split_by_extruder;
-            if (!split_masks_pointillism_stripes(state_masks, *sequence_ptr, num_physical, layer_id, stripe_pitch, false, split_by_extruder)) {
+            if (!split_masks_pointillism_stripes(state_masks, *sequence_ptr, num_physical, layer_id, stripe_pitch, false, split_by_extruder, fix_orient)) {
                 ++skipped_states;
                 continue;
             }
             size_t split_unique = non_empty_mask_count(split_by_extruder);
             if (split_unique < 2) {
                 std::vector<ExPolygons> retry_split;
-                if (split_masks_pointillism_stripes(state_masks, *sequence_ptr, num_physical, layer_id, stripe_pitch, true, retry_split)) {
+                if (split_masks_pointillism_stripes(state_masks, *sequence_ptr, num_physical, layer_id, stripe_pitch, true, retry_split, fix_orient)) {
                     const size_t retry_unique = non_empty_mask_count(retry_split);
                     if (retry_unique > split_unique) {
                         split_by_extruder = std::move(retry_split);

@@ -20,7 +20,14 @@ struct MixedFilament
     enum DistributionMode : uint8_t {
         LayerCycle = 0,
         SameLayerPointillisme = 1,
-        Simple = 2
+        Simple = 2,
+        // Like SameLayerPointillisme but stripe orientation is fixed (no per-layer
+        // flip) and the starting filament offsets each layer so successive layers
+        // produce A,B,A,B... then B,A,B,A... alternating.
+        SameLayerAlternating = 3,
+        // Outer wall and next interior wall carry opposite filaments; the
+        // assignment swaps every layer, exploiting light transmission / translucency.
+        WallAlternating = 4,
     };
 
     // 1-based physical filament IDs that are combined.
