@@ -213,6 +213,7 @@ private:
     bool   m_used_fillet                  = true;
     float  m_rib_width                    = 10;
     float  m_corner_radius                = 3.f;
+    float  m_star_rotation                = 2.f; // degrees of rotation per mm of height
     float  m_extra_rib_length             = 0;
     float  m_rib_length                   = 0;
 

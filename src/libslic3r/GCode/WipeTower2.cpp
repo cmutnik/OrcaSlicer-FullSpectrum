@@ -587,15 +587,17 @@ Polygon generate_diamond_polygon(const Vec2f& wt_box_min, const Vec2f& wt_box_ma
 
 // 6-pointed star: 12 vertices alternating between outer radius and inner radius (50% of outer).
 // Outer points are at 90°, 150°, 210°, 270°, 330°, 30°; inner points are midway between them.
-Polygon generate_star_polygon(const Vec2f& wt_box_min, const Vec2f& wt_box_max)
+// angle_offset_deg rotates the whole star, enabling slow per-layer rotation.
+Polygon generate_star_polygon(const Vec2f& wt_box_min, const Vec2f& wt_box_max, float angle_offset_deg = 0.f)
 {
     Vec2f center  = (wt_box_min + wt_box_max) / 2.f;
     float rx      = (wt_box_max[0] - wt_box_min[0]) / 2.f;
     float ry      = (wt_box_max[1] - wt_box_min[1]) / 2.f;
-    const float inner_ratio = 0.5f; // inner concave radius as fraction of outer
+    const float inner_ratio  = 0.5f; // inner concave radius as fraction of outer
+    const float angle_offset = Geometry::deg2rad(angle_offset_deg);
     Polygon res;
     for (int i = 0; i < 6; i++) {
-        float alpha_outer = float(M_PI) / 2.f + 2.f * float(M_PI) * i / 6.f;
+        float alpha_outer = float(M_PI) / 2.f + 2.f * float(M_PI) * i / 6.f + angle_offset;
         float alpha_inner = alpha_outer + float(M_PI) / 6.f;
         res.points.push_back(scaled(Vec2f(center[0] + rx * std::cos(alpha_outer),
                                           center[1] + ry * std::sin(alpha_outer))));
@@ -1360,6 +1362,7 @@ WipeTower2::WipeTower2(const PrintConfig&                     config,
     , m_used_fillet(config.wipe_tower_fillet_wall)
     , m_rib_width(config.wipe_tower_rib_width)
     , m_corner_radius(config.wipe_tower_corner_radius)
+    , m_star_rotation(config.wipe_tower_star_rotation)
     , m_extra_rib_length(config.wipe_tower_extra_rib_length)
     , m_wall_type((int) config.wipe_tower_wall_type)
 {
@@ -2717,7 +2720,7 @@ Polygon WipeTower2::generate_support_rib_wall(WipeTowerWriter2&                 
     else if (wall_type == (int) wtwDiamond)
         wall_polygon = generate_diamond_polygon(wt_box.ld, wt_box.ru);
     else if (wall_type == (int) wtwStar)
-        wall_polygon = generate_star_polygon(wt_box.ld, wt_box.ru);
+        wall_polygon = generate_star_polygon(wt_box.ld, wt_box.ru, m_z_pos * m_star_rotation);
     else
         wall_polygon = generate_rectange_polygon(wt_box.ld, wt_box.ru);
     Polylines result_wall;

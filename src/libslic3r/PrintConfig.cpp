@@ -5963,6 +5963,17 @@ void PrintConfigDef::init_fff_params()
     def->mode     = comAdvanced;
     def->set_default_value(new ConfigOptionFloat(3));
 
+    def           = this->add("wipe_tower_star_rotation", coFloat);
+    def->label    = L("Star rotation speed");
+    def->tooltip  = L("How many degrees the Star prime tower wall rotates per mm of height. "
+                       "Keep this value small to ensure good layer adhesion. "
+                       "Set to 0 to disable rotation.");
+    def->sidetext = "°/mm";
+    def->min      = 0;
+    def->max      = 10;
+    def->mode     = comAdvanced;
+    def->set_default_value(new ConfigOptionFloat(2));
+
     def           = this->add("wipe_tower_extra_rib_length", coFloat);
     def->label    = L("Extra rib length");
     def->tooltip  = L("Positive values can increase the size of the rib wall, while negative values can reduce the size. "
