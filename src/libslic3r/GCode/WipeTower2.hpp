@@ -212,6 +212,7 @@ private:
 	int m_wall_type;
     bool   m_used_fillet                  = true;
     float  m_rib_width                    = 10;
+    float  m_corner_radius                = 3.f;
     float  m_extra_rib_length             = 0;
     float  m_rib_length                   = 0;
 
@@ -347,7 +348,7 @@ private:
                                       const WipeTower::box_coordinates& wt_box,
                                       double                 feedrate,
                                       bool                   first_layer,
-                                      bool                   rib_wall,
+                                      int                    wall_type,
                                       bool                   extrude_perimeter,
                                       bool                   skip_points);
 

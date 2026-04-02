@@ -462,6 +462,10 @@ static const t_config_enum_values s_keys_map_WipeTowerWallType{
     {"rectangle", wtwRectangle},
     {"cone", wtwCone},
     {"rib", wtwRib},
+    {"rounded_rectangle", wtwRoundedRectangle},
+    {"circle", wtwCircle},
+    {"hexagon", wtwHexagon},
+    {"diamond", wtwDiamond},
 };
 CONFIG_OPTION_ENUM_DEFINE_STATIC_MAPS(WipeTowerWallType)
 
@@ -5923,16 +5927,37 @@ void PrintConfigDef::init_fff_params()
     def->tooltip = L("Wipe tower outer wall type.\n"
                     "1. Rectangle: The default wall type, a rectangle with fixed width and height.\n"
                     "2. Cone: A cone with a fillet at the bottom to help stabilize the wipe tower.\n"
-                    "3. Rib: Adds four ribs to the tower wall for enhanced stability.");
+                    "3. Rib: Adds four ribs to the tower wall for enhanced stability.\n"
+                    "4. Rounded Rectangle: Rectangle with smooth rounded corners.\n"
+                    "5. Circle: Circular cross-section for maximum smoothness.\n"
+                    "6. Hexagon: Six-sided polygon for good structural properties.\n"
+                    "7. Diamond: Square rotated 45° for a different stress distribution.");
     def->enum_keys_map = &ConfigOptionEnum<WipeTowerWallType>::get_enum_values();
     def->enum_values.emplace_back("rectangle");
     def->enum_values.emplace_back("cone");
     def->enum_values.emplace_back("rib");
+    def->enum_values.emplace_back("rounded_rectangle");
+    def->enum_values.emplace_back("circle");
+    def->enum_values.emplace_back("hexagon");
+    def->enum_values.emplace_back("diamond");
     def->enum_labels.emplace_back("Rectangle");
     def->enum_labels.emplace_back("Cone");
     def->enum_labels.emplace_back("Rib");
+    def->enum_labels.emplace_back("Rounded Rectangle");
+    def->enum_labels.emplace_back("Circle");
+    def->enum_labels.emplace_back("Hexagon");
+    def->enum_labels.emplace_back("Diamond");
     def->mode = comAdvanced;
     def->set_default_value(new ConfigOptionEnum<WipeTowerWallType>(wtwRectangle));
+
+    def           = this->add("wipe_tower_corner_radius", coFloat);
+    def->label    = L("Corner radius");
+    def->tooltip  = L("Corner radius for the Rounded Rectangle prime tower wall type.");
+    def->sidetext = "mm";
+    def->min      = 0;
+    def->max      = 50;
+    def->mode     = comAdvanced;
+    def->set_default_value(new ConfigOptionFloat(3));
 
     def           = this->add("wipe_tower_extra_rib_length", coFloat);
     def->label    = L("Extra rib length");

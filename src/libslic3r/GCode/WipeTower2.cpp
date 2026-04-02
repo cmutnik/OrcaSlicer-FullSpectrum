@@ -542,6 +542,49 @@ Polygon generate_rectange_polygon(const Vec2f& wt_box_min, const Vec2f& wt_box_m
     return res;
 }
 
+Polygon generate_rounded_rectangle_polygon(const Vec2f& wt_box_min, const Vec2f& wt_box_max, float corner_radius)
+{
+    Polygon rect = generate_rectange_polygon(wt_box_min, wt_box_max);
+    return rounding_rectangle(rect, corner_radius);
+}
+
+Polygon generate_circle_polygon(const Vec2f& wt_box_min, const Vec2f& wt_box_max)
+{
+    Vec2f center = (wt_box_min + wt_box_max) / 2.f;
+    float r      = std::min(wt_box_max[0] - wt_box_min[0], wt_box_max[1] - wt_box_min[1]) / 2.f;
+    Polygon res;
+    const int n = 40;
+    for (int i = 0; i < n; i++) {
+        float alpha = 2.f * float(M_PI) * i / n;
+        res.points.push_back(scaled(Vec2f(center[0] + r * std::cos(alpha), center[1] + r * std::sin(alpha))));
+    }
+    return res;
+}
+
+Polygon generate_hexagon_polygon(const Vec2f& wt_box_min, const Vec2f& wt_box_max)
+{
+    Vec2f center = (wt_box_min + wt_box_max) / 2.f;
+    float rx     = (wt_box_max[0] - wt_box_min[0]) / 2.f;
+    float ry     = (wt_box_max[1] - wt_box_min[1]) / 2.f;
+    Polygon res;
+    for (int i = 0; i < 6; i++) {
+        float alpha = float(M_PI) / 2.f + 2.f * float(M_PI) * i / 6.f;
+        res.points.push_back(scaled(Vec2f(center[0] + rx * std::cos(alpha), center[1] + ry * std::sin(alpha))));
+    }
+    return res;
+}
+
+Polygon generate_diamond_polygon(const Vec2f& wt_box_min, const Vec2f& wt_box_max)
+{
+    Vec2f center = (wt_box_min + wt_box_max) / 2.f;
+    Polygon res;
+    res.points.push_back(scaled(Vec2f(center[0], wt_box_max[1]))); // top
+    res.points.push_back(scaled(Vec2f(wt_box_max[0], center[1]))); // right
+    res.points.push_back(scaled(Vec2f(center[0], wt_box_min[1]))); // bottom
+    res.points.push_back(scaled(Vec2f(wt_box_min[0], center[1]))); // left
+    return res;
+}
+
 // Calculates length of extrusion line to extrude given volume
 static float volume_to_length(float volume, float line_width, float layer_height)
 {
@@ -1296,6 +1339,7 @@ WipeTower2::WipeTower2(const PrintConfig&                     config,
     , m_enable_arc_fitting(config.enable_arc_fitting)
     , m_used_fillet(config.wipe_tower_fillet_wall)
     , m_rib_width(config.wipe_tower_rib_width)
+    , m_corner_radius(config.wipe_tower_corner_radius)
     , m_extra_rib_length(config.wipe_tower_extra_rib_length)
     , m_wall_type((int) config.wipe_tower_wall_type)
 {
@@ -2135,7 +2179,7 @@ WipeTower::ToolChangeResult WipeTower2::finish_layer()
         poly             = generate_support_cone_wall(writer, wt_box, feedrate, infill_cone, spacing);
     } else {
         WipeTower::box_coordinates wt_box(Vec2f(0.f, 0.f), m_wipe_tower_width, m_layer_info->depth + m_perimeter_width);
-        poly = generate_support_rib_wall(writer, wt_box, feedrate, first_layer, m_wall_type == (int) wtwRib, true, false);
+        poly = generate_support_rib_wall(writer, wt_box, feedrate, first_layer, m_wall_type, true, false);
     }
 
     // brim with chamfer (gradual layer-by-layer reduction)
@@ -2635,23 +2679,36 @@ Polygon WipeTower2::generate_support_rib_wall(WipeTowerWriter2&                 
                                               const WipeTower::box_coordinates& wt_box,
                                               double                            feedrate,
                                               bool                              first_layer,
-                                              bool                              rib_wall,
+                                              int                               wall_type,
                                               bool                              extrude_perimeter,
                                               bool                              skip_points)
 {
-    float     retract_length = m_filpar[m_current_tool].retract_length;
-    float     retract_speed  = m_filpar[m_current_tool].retract_speed * 60;
-    Polygon   wall_polygon   = rib_wall ? generate_rib_polygon(wt_box) : generate_rectange_polygon(wt_box.ld, wt_box.ru);
+    float   retract_length = m_filpar[m_current_tool].retract_length;
+    float   retract_speed  = m_filpar[m_current_tool].retract_speed * 60;
+    Polygon wall_polygon;
+    if (wall_type == (int) wtwRib)
+        wall_polygon = generate_rib_polygon(wt_box);
+    else if (wall_type == (int) wtwRoundedRectangle)
+        wall_polygon = generate_rounded_rectangle_polygon(wt_box.ld, wt_box.ru, m_corner_radius);
+    else if (wall_type == (int) wtwCircle)
+        wall_polygon = generate_circle_polygon(wt_box.ld, wt_box.ru);
+    else if (wall_type == (int) wtwHexagon)
+        wall_polygon = generate_hexagon_polygon(wt_box.ld, wt_box.ru);
+    else if (wall_type == (int) wtwDiamond)
+        wall_polygon = generate_diamond_polygon(wt_box.ld, wt_box.ru);
+    else
+        wall_polygon = generate_rectange_polygon(wt_box.ld, wt_box.ru);
     Polylines result_wall;
     Polygon   insert_skip_polygon;
     if (m_used_fillet) {
-        if (!rib_wall && m_y_shift > EPSILON) // do nothing because the fillet will cause it to be suspended.
-        {
-        } else {
-            wall_polygon           = rib_wall ? rounding_polygon(wall_polygon) : wall_polygon; // rectangle_wall do nothing
+        if (wall_type == (int) wtwRectangle && m_y_shift > EPSILON) {
+            // do nothing: fillet would cause suspension for shifted rectangle
+        } else if (wall_type == (int) wtwRectangle || wall_type == (int) wtwRib) {
+            wall_polygon           = (wall_type == (int) wtwRib) ? rounding_polygon(wall_polygon) : wall_polygon;
             Polygon wt_box_polygon = generate_rectange_polygon(wt_box.ld, wt_box.ru);
             wall_polygon           = union_({wall_polygon, wt_box_polygon}).front();
         }
+        // New shapes (rounded_rectangle, circle, hexagon, diamond): no modification needed
     }
     if (!extrude_perimeter)
         return wall_polygon;

@@ -368,7 +368,11 @@ enum CounterboreHoleBridgingOption {
  enum WipeTowerWallType {
      wtwRectangle = 0,
      wtwCone,
-     wtwRib
+     wtwRib,
+     wtwRoundedRectangle,
+     wtwCircle,
+     wtwHexagon,
+     wtwDiamond
  };
 
 static std::string bed_type_to_gcode_string(const BedType type)
@@ -1414,6 +1418,7 @@ PRINT_CONFIG_CLASS_DERIVED_DEFINE(
     ((ConfigOptionEnum<WipeTowerWallType>,    wipe_tower_wall_type))
     ((ConfigOptionFloat,              wipe_tower_extra_rib_length))
     ((ConfigOptionFloat,              wipe_tower_rib_width))
+    ((ConfigOptionFloat,              wipe_tower_corner_radius))
     ((ConfigOptionBool,               wipe_tower_fillet_wall))
     ((ConfigOptionInt,                wipe_tower_filament))
     ((ConfigOptionFloats,             wiping_volumes_extruders))
