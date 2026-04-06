@@ -196,7 +196,8 @@ private:
     bool   m_prime_tower_brim_chamfer          = true;   // Enable/disable brim chamfer
     float  m_prime_tower_brim_chamfer_max_width = 4.f;   // Max chamfer width (mm)
 	float  m_wipe_tower_rotation_angle = 0.f; // Wipe tower rotation angle in degrees (with respect to x axis)
-    float  m_internal_rotation  = 0.f;
+    float  m_internal_rotation    = 0.f;
+    float  m_layer_rotation_step  = 180.f; // degrees added to internal rotation each layer
 	float  m_y_shift			= 0.f;  // y shift passed to writer
 	float  m_z_pos 				= 0.f;  // Current Z position.
 	float  m_layer_height 		= 0.f; 	// Current layer height.
@@ -212,6 +213,8 @@ private:
 	int m_wall_type;
     bool   m_used_fillet                  = true;
     float  m_rib_width                    = 10;
+    float  m_corner_radius                = 3.f;
+    float  m_star_rotation                = 2.f; // degrees of rotation per mm of height
     float  m_extra_rib_length             = 0;
     float  m_rib_length                   = 0;
 
@@ -347,7 +350,7 @@ private:
                                       const WipeTower::box_coordinates& wt_box,
                                       double                 feedrate,
                                       bool                   first_layer,
-                                      bool                   rib_wall,
+                                      int                    wall_type,
                                       bool                   extrude_perimeter,
                                       bool                   skip_points);
 
