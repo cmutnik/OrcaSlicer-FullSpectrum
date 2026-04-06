@@ -2721,7 +2721,7 @@ Polygon WipeTower2::generate_support_rib_wall(WipeTowerWriter2&                 
     else if (wall_type == (int) wtwDiamond)
         wall_polygon = generate_diamond_polygon(wt_box.ld, wt_box.ru);
     else if (wall_type == (int) wtwStar)
-        wall_polygon = generate_star_polygon(wt_box.ld, wt_box.ru, m_z_pos * m_star_rotation);
+        wall_polygon = generate_star_polygon(Vec2f(0.f, 0.f), Vec2f(m_wipe_tower_width, m_wipe_tower_depth), m_z_pos * m_star_rotation);
     else
         wall_polygon = generate_rectange_polygon(wt_box.ld, wt_box.ru);
     Polylines result_wall;
