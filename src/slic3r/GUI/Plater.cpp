@@ -5179,6 +5179,28 @@ void Sidebar::delete_filament(size_t filament_id, int replace_filament_id)
     wxGetApp().plater()->update();
 }
 
+unsigned int Sidebar::add_mixed_filament_from_import(unsigned int component_a,
+                                                       unsigned int component_b,
+                                                       int          mix_b_percent)
+{
+    auto &mgr = wxGetApp().preset_bundle->mixed_filaments;
+    const std::vector<std::string> filament_colours =
+        wxGetApp().plater()->get_extruder_colors_from_plater_config();
+
+    mgr.add_custom_filament(component_a, component_b, mix_b_percent, filament_colours);
+
+    // Persist so the new entry survives the clear/load cycle in update_mixed_filament_panel
+    if (auto *opt = wxGetApp().preset_bundle->project_config
+                        .option<Slic3r::ConfigOptionString>("mixed_filament_definitions"))
+        opt->value = mgr.serialize_custom_entries();
+
+    update_mixed_filament_panel(false);
+
+    // Virtual ID = num_physical + position among enabled mixed filaments
+    const size_t num_physical = p->combos_filament.size();
+    return static_cast<unsigned int>(num_physical + mgr.enabled_count());
+}
+
 void Sidebar::add_custom_filament(wxColour new_col) {
     if (p->combos_filament.size() >= MAXIMUM_EXTRUDER_NUMBER) return;
 

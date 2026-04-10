@@ -17,6 +17,7 @@
 #include <wx/sizer.h>
 
 #include "libslic3r/ObjColorUtils.hpp"
+#include "libslic3r/MixedFilament.hpp"
 
 using namespace Slic3r;
 using namespace Slic3r::GUI;
@@ -44,6 +45,8 @@ static void update_ui(wxWindow* window)
 static const char g_min_cluster_color = 1;
 //static const char g_max_cluster_color = 15;
 static const char g_max_color = 16;
+static constexpr float BLEND_MATCH_THRESHOLD = 15.0f; // try blend when nearest physical DeltaE > this
+static constexpr float BLEND_ACCEPT_MAX_DE   = 30.0f; // only create mix if blend DeltaE < this
 const  StateColor ok_btn_bg(std::pair<wxColour, int>(wxColour(0, 137, 123), StateColor::Pressed),
                      std::pair<wxColour, int>(wxColour(38, 166, 154), StateColor::Hovered),
                      std::pair<wxColour, int>(wxColour(0, 150, 136), StateColor::Normal));
@@ -399,42 +402,48 @@ void ObjColorPanel::update_filament_ids()
     const int existing_filament_count = static_cast<int>(m_colours.size());
     std::map<int, int> appended_filament_id_map;
 
-    if (!m_new_add_colors.empty()) {
-        std::vector<int> selected_appended_indices;
-        selected_appended_indices.reserve(m_cluster_map_filaments.size());
-        for (int mapped_filament_id : m_cluster_map_filaments) {
-            if (mapped_filament_id > existing_filament_count) {
-                selected_appended_indices.emplace_back(mapped_filament_id);
-            }
-        }
+    // Collect all "new" combobox slots referenced by any cluster
+    std::vector<int> selected_new_indices;
+    selected_new_indices.reserve(m_cluster_map_filaments.size());
+    for (int id : m_cluster_map_filaments) {
+        if (id > existing_filament_count)
+            selected_new_indices.emplace_back(id);
+    }
+    std::sort(selected_new_indices.begin(), selected_new_indices.end());
+    selected_new_indices.erase(
+        std::unique(selected_new_indices.begin(), selected_new_indices.end()),
+        selected_new_indices.end());
 
-        std::sort(selected_appended_indices.begin(), selected_appended_indices.end());
-        selected_appended_indices.erase(std::unique(selected_appended_indices.begin(), selected_appended_indices.end()), selected_appended_indices.end());
+    // Pass 1: add new physical filaments (slots NOT in m_mix_proposals_by_slot)
+    int next_physical_id = existing_filament_count + 1;
+    for (int slot : selected_new_indices) {
+        if (m_mix_proposals_by_slot.count(slot)) continue;
+        const int idx = slot - existing_filament_count - 1;
+        if (idx < 0 || idx >= static_cast<int>(m_new_add_colors.size())) continue;
+        wxGetApp().sidebar().add_custom_filament(m_new_add_colors[idx]);
+        appended_filament_id_map.emplace(slot, next_physical_id++);
+    }
 
-        int next_filament_id = existing_filament_count + 1;
-        for (int combo_selection : selected_appended_indices) {
-            const int new_color_idx = combo_selection - existing_filament_count - 1;
-            if (new_color_idx < 0 || new_color_idx >= static_cast<int>(m_new_add_colors.size())) {
-                continue;
-            }
-
-            wxGetApp().sidebar().add_custom_filament(m_new_add_colors[new_color_idx]);
-            appended_filament_id_map.emplace(combo_selection, next_filament_id++);
-        }
+    // Pass 2: add mixed filament proposals (after all physical adds, so virtual IDs are correct)
+    for (int slot : selected_new_indices) {
+        auto it = m_mix_proposals_by_slot.find(slot);
+        if (it == m_mix_proposals_by_slot.end()) continue;
+        auto &prop = it->second;
+        unsigned int virtual_id = wxGetApp().sidebar().add_mixed_filament_from_import(
+            prop.component_a, prop.component_b, prop.mix_b_percent);
+        appended_filament_id_map.emplace(slot, static_cast<int>(virtual_id));
     }
 
     auto resolve_filament_id = [&appended_filament_id_map](int mapped_filament_id) {
         const auto it = appended_filament_id_map.find(mapped_filament_id);
-        const int resolved_filament_id = it == appended_filament_id_map.end() ? mapped_filament_id : it->second;
-        return static_cast<unsigned char>(resolved_filament_id);
+        const int resolved = it == appended_filament_id_map.end() ? mapped_filament_id : it->second;
+        return static_cast<unsigned char>(resolved);
     };
 
     m_filament_ids.clear();
     m_filament_ids.reserve(m_input_colors_size);
-    for (size_t i = 0; i < m_input_colors_size; i++) {
-        auto label = m_cluster_labels_from_algo[i];
-        m_filament_ids.emplace_back(resolve_filament_id(m_cluster_map_filaments[label]));
-    }
+    for (size_t i = 0; i < m_input_colors_size; i++)
+        m_filament_ids.emplace_back(resolve_filament_id(m_cluster_map_filaments[m_cluster_labels_from_algo[i]]));
     m_first_extruder_id = resolve_filament_id(m_cluster_map_filaments[0]);
 }
 
@@ -602,7 +611,38 @@ void ObjColorPanel::deal_approximate_match_btn()
         std::sort(color_dists.begin(), color_dists.end(), [](ColorDistValue &a, ColorDistValue& b) {
             return a.distance < b.distance;
             });
-        auto new_index= color_dists[0].id;
+        auto new_index = color_dists[0].id;
+
+        // When the nearest physical filament is a poor match, try to find a better
+        // approximation by blending two existing physical filaments.
+        if (color_dists[0].distance > BLEND_MATCH_THRESHOLD) {
+            MixProposal prop;
+            float       blend_de;
+            wxColour    blended;
+            if (find_best_blend(c, m_colours, prop, blend_de, blended)
+                && blend_de < color_dists[0].distance
+                && blend_de < BLEND_ACCEPT_MAX_DE)
+            {
+                // Deduplicate: reuse existing proposal slot if close enough (±2%)
+                int existing_slot = 0;
+                for (auto &kv : m_mix_proposals_by_slot) {
+                    auto &p = kv.second;
+                    if (p.component_a == prop.component_a
+                        && p.component_b == prop.component_b
+                        && std::abs(p.mix_b_percent - prop.mix_b_percent) <= 2) {
+                        existing_slot = kv.first;
+                        break;
+                    }
+                }
+                int slot = existing_slot > 0
+                    ? existing_slot
+                    : append_mixed_proposal_option(prop.component_a, prop.component_b,
+                                                   prop.mix_b_percent, blended);
+                if (slot > 0)
+                    new_index = slot;
+            }
+        }
+
         m_result_icon_list[i]->bitmap_combox->SetSelection(new_index);
         m_cluster_map_filaments[i] = new_index;
     }
@@ -612,6 +652,82 @@ void ObjColorPanel::deal_approximate_match_btn()
 bool ObjColorPanel::colors_are_equal(const wxColour &lhs, const wxColour &rhs)
 {
     return lhs.Red() == rhs.Red() && lhs.Green() == rhs.Green() && lhs.Blue() == rhs.Blue() && lhs.Alpha() == rhs.Alpha();
+}
+
+bool ObjColorPanel::find_best_blend(const wxColour &target,
+                                     const std::vector<wxColour> &physicals,
+                                     MixProposal &out, float &out_de, wxColour &out_blended)
+{
+    if (physicals.size() < 2) return false;
+
+    float tL, ta, tb;
+    RGB2Lab(target.Red(), target.Green(), target.Blue(), &tL, &ta, &tb);
+
+    float best_de = std::numeric_limits<float>::max();
+    int   best_i  = -1, best_j = -1;
+    float best_t  = 0.5f;
+
+    for (int i = 0; i < (int)physicals.size(); ++i) {
+        float L1, a1, b1;
+        RGB2Lab(physicals[i].Red(), physicals[i].Green(), physicals[i].Blue(), &L1, &a1, &b1);
+
+        for (int j = i + 1; j < (int)physicals.size(); ++j) {
+            float L2, a2, b2;
+            RGB2Lab(physicals[j].Red(), physicals[j].Green(), physicals[j].Blue(), &L2, &a2, &b2);
+
+            // Closed-form: project target onto line segment c1..c2 in Lab space
+            float dL = L2 - L1, da = a2 - a1, db = b2 - b1;
+            float len2 = dL*dL + da*da + db*db;
+            float t = 0.5f;
+            if (len2 > 1e-6f) {
+                t = ((tL - L1)*dL + (ta - a1)*da + (tb - b1)*db) / len2;
+                t = std::max(0.0f, std::min(1.0f, t));
+            }
+
+            float bL = L1 + t*(L2 - L1);
+            float ba = a1 + t*(a2 - a1);
+            float bb_ = b1 + t*(b2 - b1);
+            float de = DeltaE76(tL, ta, tb, bL, ba, bb_);
+
+            if (de < best_de) {
+                best_de = de;
+                best_i  = i;
+                best_j  = j;
+                best_t  = t;
+            }
+        }
+    }
+
+    if (best_i < 0) return false;
+
+    out_de            = best_de;
+    out.component_a   = static_cast<unsigned int>(best_i + 1);
+    out.component_b   = static_cast<unsigned int>(best_j + 1);
+    out.mix_b_percent = static_cast<int>(std::round(best_t * 100.0f));
+
+    // Compute accurate blended color via FilamentMixer (same algorithm as the sidebar preview)
+    std::string hex_a = physicals[best_i].GetAsString(wxC2S_HTML_SYNTAX).ToStdString();
+    std::string hex_b = physicals[best_j].GetAsString(wxC2S_HTML_SYNTAX).ToStdString();
+    int pct_b         = out.mix_b_percent;
+    std::string blended_hex = Slic3r::MixedFilamentManager::blend_color(hex_a, hex_b,
+                                                                          100 - pct_b, pct_b);
+    if (blended_hex.size() >= 7)
+        out_blended = wxColour(blended_hex.substr(0, 7));
+    else
+        out_blended = wxColour(
+            static_cast<int>(physicals[best_i].Red()   * (1.0f - best_t) + physicals[best_j].Red()   * best_t),
+            static_cast<int>(physicals[best_i].Green() * (1.0f - best_t) + physicals[best_j].Green() * best_t),
+            static_cast<int>(physicals[best_i].Blue()  * (1.0f - best_t) + physicals[best_j].Blue()  * best_t));
+    return true;
+}
+
+int ObjColorPanel::append_mixed_proposal_option(unsigned int a, unsigned int b, int pct,
+                                                  const wxColour &blended)
+{
+    int slot = append_new_filament_option(blended);
+    if (slot > 0)
+        m_mix_proposals_by_slot.emplace(slot, MixProposal{a, b, pct});
+    return slot;
 }
 
 int ObjColorPanel::find_filament_selection_by_color(const wxColour &color) const
@@ -891,6 +1007,7 @@ void ObjColorPanel::deal_reset_btn()
         }
     }
     m_new_add_colors.clear();
+    m_mix_proposals_by_slot.clear();
     m_warning_text->SetLabelText("");
     update_keep_color_buttons();
 }

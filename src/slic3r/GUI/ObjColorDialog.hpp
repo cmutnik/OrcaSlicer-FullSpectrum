@@ -3,6 +3,7 @@
 
 #include "GUI_Utils.hpp"
 #include "libslic3r/Color.hpp"
+#include <map>
 #include <wx/sizer.h>
 #include <wx/spinctrl.h>
 #include <wx/stattext.h>
@@ -12,6 +13,13 @@
 class Button;
 class Label;
 class ComboBox;
+
+struct MixProposal {
+    unsigned int component_a;   // 1-based physical filament index
+    unsigned int component_b;
+    int          mix_b_percent; // 0..100
+};
+
 struct ColorDistValue
 {
     int   id;
@@ -56,6 +64,10 @@ private:
     void deal_default_strategy();
     int find_filament_selection_by_color(const wxColour &color) const;
     int append_new_filament_option(const wxColour &color);
+    int append_mixed_proposal_option(unsigned int a, unsigned int b, int pct, const wxColour &blended);
+    static bool find_best_blend(const wxColour &target,
+                                const std::vector<wxColour> &physicals,
+                                MixProposal &out, float &out_de, wxColour &out_blended);
     void update_keep_color_buttons();
     static bool colors_are_equal(const wxColour &lhs, const wxColour &rhs);
 private:
@@ -90,6 +102,7 @@ private:
     std::vector<int>      m_cluster_map_filaments;//show middle
     std::vector<wxColour> m_cluster_colours;//from_algo and show left
     std::vector<wxColour> m_new_add_colors;
+    std::map<int, MixProposal> m_mix_proposals_by_slot; // combobox slot -> mix spec
     //algo result
     std::vector<Slic3r::RGBA> m_cluster_colors_from_algo;
     std::vector<int>          m_cluster_labels_from_algo;
