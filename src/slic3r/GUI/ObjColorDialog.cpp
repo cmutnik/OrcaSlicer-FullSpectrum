@@ -368,12 +368,15 @@ ObjColorPanel::ObjColorPanel(wxWindow *                       parent,
         quick_set_sizer->Add(quick_set_title, 0, wxALIGN_CENTER | wxALL, 0);
         quick_set_sizer->AddSpacer(FromDIP(10));
 
-        auto calc_approximate_match_btn_sizer = create_approximate_match_btn_sizer(m_page_simple);
-        auto calc_add_btn_sizer = create_add_btn_sizer(m_page_simple);
-        auto calc_reset_btn_sizer      = create_reset_btn_sizer(m_page_simple);
+        auto calc_approximate_match_btn_sizer  = create_approximate_match_btn_sizer(m_page_simple);
+        auto calc_keep_all_colors_btn_sizer    = create_keep_all_colors_btn_sizer(m_page_simple);
+        auto calc_add_btn_sizer                = create_add_btn_sizer(m_page_simple);
+        auto calc_reset_btn_sizer              = create_reset_btn_sizer(m_page_simple);
         quick_set_sizer->Add(calc_add_btn_sizer, 0, wxALIGN_CENTER | wxALL, 0);
         quick_set_sizer->AddSpacer(FromDIP(10));
         quick_set_sizer->Add(calc_approximate_match_btn_sizer, 0, wxALIGN_CENTER | wxALL, 0);
+        quick_set_sizer->AddSpacer(FromDIP(10));
+        quick_set_sizer->Add(calc_keep_all_colors_btn_sizer, 0, wxALIGN_CENTER | wxALL, 0);
         quick_set_sizer->AddSpacer(FromDIP(10));
         quick_set_sizer->Add(calc_reset_btn_sizer, 0, wxALIGN_CENTER | wxALL, 0);
         quick_set_sizer->AddSpacer(FromDIP(14));
@@ -504,6 +507,31 @@ wxBoxSizer *ObjColorPanel::create_approximate_match_btn_sizer(wxWindow *parent)
     return btn_sizer;
 }
 
+wxBoxSizer *ObjColorPanel::create_keep_all_colors_btn_sizer(wxWindow *parent)
+{
+    auto       btn_sizer = new wxBoxSizer(wxHORIZONTAL);
+    StateColor calc_btn_bg(std::pair<wxColour, int>(wxColour(0, 137, 123), StateColor::Pressed),
+                           std::pair<wxColour, int>(wxColour(38, 166, 154), StateColor::Hovered),
+                           std::pair<wxColour, int>(wxColour(0, 150, 136), StateColor::Normal));
+    StateColor calc_btn_bd(std::pair<wxColour, int>(wxColour(0, 150, 136), StateColor::Normal));
+    StateColor calc_btn_text(std::pair<wxColour, int>(wxColour(255, 255, 254), StateColor::Normal));
+    m_quick_keep_all_colors_btn = new Button(parent, _L("Keep all colors"));
+    m_quick_keep_all_colors_btn->SetToolTip(
+        _L("Map all incoming colors using only the existing filaments and auto-generated Mixed Filament blends. No new physical filament slots are added."));
+    auto cur_btn = m_quick_keep_all_colors_btn;
+    cur_btn->SetFont(Label::Body_13);
+    cur_btn->SetMinSize(wxSize(FromDIP(80), FromDIP(20)));
+    cur_btn->SetCornerRadius(FromDIP(10));
+    cur_btn->SetBackgroundColor(calc_btn_bg);
+    cur_btn->SetBorderColor(calc_btn_bd);
+    cur_btn->SetTextColor(calc_btn_text);
+    btn_sizer->Add(cur_btn, 0, wxRIGHT | wxALIGN_CENTER_VERTICAL, 0);
+    cur_btn->Bind(wxEVT_BUTTON, [this](wxCommandEvent &) {
+        deal_keep_all_colors_btn();
+    });
+    return btn_sizer;
+}
+
 wxBoxSizer *ObjColorPanel::create_add_btn_sizer(wxWindow *parent)
 {
     auto       btn_sizer = new wxBoxSizer(wxHORIZONTAL);
@@ -611,6 +639,75 @@ ComboBox *ObjColorPanel::CreateEditorCtrl(wxWindow *parent, int id) // wxRect la
         evt.StopPropagation();
     });
     return c_editor;
+}
+
+void ObjColorPanel::deal_keep_all_colors_btn()
+{
+    if (!m_new_add_colors.empty() || !m_mix_proposals_by_slot.empty())
+        deal_reset_btn();
+
+    m_warning_text->SetLabelText("");
+    if (m_result_icon_list.empty()) return;
+    const int map_count = static_cast<int>(m_colours.size());
+    if (map_count < 1) return;
+
+    auto calc_de = [](wxColour c1, wxColour c2) {
+        float lab[2][3];
+        RGB2Lab(c1.Red(), c1.Green(), c1.Blue(), &lab[0][0], &lab[0][1], &lab[0][2]);
+        RGB2Lab(c2.Red(), c2.Green(), c2.Blue(), &lab[1][0], &lab[1][1], &lab[1][2]);
+        return DeltaE76(lab[0][0], lab[0][1], lab[0][2], lab[1][0], lab[1][1], lab[1][2]);
+    };
+
+    for (size_t i = 0; i < m_cluster_colours.size(); i++) {
+        auto c = m_cluster_colours[i];
+
+        // Find best physical match using combobox tooltips (same as approximate match)
+        std::vector<ColorDistValue> dists(map_count);
+        for (int j = 0; j < map_count; j++) {
+            auto tip_color = m_result_icon_list[0]->bitmap_combox->GetItemTooltip(j + 1);
+            wxColour candidate(tip_color);
+            dists[j].distance = calc_de(c, candidate);
+            dists[j].id = j + 1;
+        }
+        std::sort(dists.begin(), dists.end(), [](ColorDistValue &a, ColorDistValue &b) {
+            return a.distance < b.distance;
+        });
+
+        int new_index = dists[0].id;
+
+        // Always attempt a blend. Use it whenever it's better than the nearest physical,
+        // even by a small margin. Never fall back to adding a new physical filament slot.
+        MixProposal prop;
+        float       blend_de;
+        wxColour    blended;
+        if (find_best_blend(c, m_colours, prop, blend_de, blended)
+            && blend_de < dists[0].distance)
+        {
+            // Deduplicate: reuse an existing proposal slot if close enough (±2%)
+            int existing_slot = 0;
+            for (auto &kv : m_mix_proposals_by_slot) {
+                if (kv.second.component_a == prop.component_a &&
+                    kv.second.component_b == prop.component_b &&
+                    std::abs(kv.second.mix_b_percent - prop.mix_b_percent) <= 2) {
+                    existing_slot = kv.first;
+                    break;
+                }
+            }
+            int slot = existing_slot > 0
+                ? existing_slot
+                : append_mixed_proposal_option(prop.component_a, prop.component_b,
+                                               prop.mix_b_percent, blended);
+            if (slot > 0)
+                new_index = slot;
+        }
+
+        m_result_icon_list[i]->bitmap_combox->SetSelection(new_index);
+        m_cluster_map_filaments[i] = new_index;
+    }
+
+    m_warning_text->SetLabelText(
+        _L("Colors mapped using existing filaments and Mixed Filament blends only."));
+    update_keep_color_buttons();
 }
 
 void ObjColorPanel::deal_approximate_match_btn()

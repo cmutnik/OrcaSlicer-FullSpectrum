@@ -45,6 +45,7 @@ public:
     };
 private:
     wxBoxSizer *create_approximate_match_btn_sizer(wxWindow *parent);
+    wxBoxSizer *create_keep_all_colors_btn_sizer(wxWindow *parent);
     wxBoxSizer *create_add_btn_sizer(wxWindow *parent);
     wxBoxSizer *create_reset_btn_sizer(wxWindow *parent);
     wxBoxSizer *create_extruder_icon_and_rgba_sizer(wxWindow *parent, int id, const wxColour& color);
@@ -57,6 +58,7 @@ private:
     void show_sizer(wxSizer *sizer, bool show);
     void redraw_part_table();
     void deal_approximate_match_btn();
+    void deal_keep_all_colors_btn();
     void deal_keep_color_btn(int id);
     void deal_add_btn();
     void deal_reset_btn();
@@ -85,6 +87,7 @@ private:
     wxTextCtrl *m_color_cluster_num_by_user_ebox{nullptr};
     wxStaticText *             m_warning_text{nullptr};
     Button *    m_quick_approximate_match_btn{nullptr};
+    Button *    m_quick_keep_all_colors_btn{nullptr};
     Button *    m_quick_add_btn{nullptr};
     Button *    m_quick_reset_btn{nullptr};
     std::vector<wxButton*> m_extruder_icon_list;
