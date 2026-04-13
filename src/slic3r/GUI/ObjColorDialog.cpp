@@ -47,6 +47,29 @@ static const char g_min_cluster_color = 1;
 static const char g_max_color = 16;
 static constexpr float BLEND_MATCH_THRESHOLD = 15.0f; // try blend when nearest physical DeltaE > this
 static constexpr float BLEND_ACCEPT_MAX_DE   = 30.0f; // only create mix if blend DeltaE < this
+
+// Convert CIE Lab to a gamut-clamped wxColour (D65 white point, sRGB gamma).
+static wxColour lab_to_wxcolour(float L, float a, float b) {
+    float fy = (L + 16.f) / 116.f;
+    float fx = a / 500.f + fy;
+    float fz = fy - b / 200.f;
+    auto finv = [](float t) { return t > 0.206897f ? t*t*t : (t - 16.f/116.f)/7.787f; };
+    float X = 0.95047f * finv(fx);
+    float Y =             finv(fy);
+    float Z = 1.08883f * finv(fz);
+    float r  =  3.2406f*X - 1.5372f*Y - 0.4986f*Z;
+    float g  = -0.9689f*X + 1.8758f*Y + 0.0415f*Z;
+    float bv =  0.0557f*X - 0.2040f*Y + 1.0570f*Z;
+    auto gc = [](float c) {
+        c = std::max(0.f, std::min(1.f, c));
+        return c <= 0.0031308f ? 12.92f*c : 1.055f*std::pow(c, 1.f/2.4f) - 0.055f;
+    };
+    return wxColour(
+        static_cast<unsigned char>(std::round(gc(r)  * 255.f)),
+        static_cast<unsigned char>(std::round(gc(g)  * 255.f)),
+        static_cast<unsigned char>(std::round(gc(bv) * 255.f)));
+}
+
 const  StateColor ok_btn_bg(std::pair<wxColour, int>(wxColour(0, 137, 123), StateColor::Pressed),
                      std::pair<wxColour, int>(wxColour(38, 166, 154), StateColor::Hovered),
                      std::pair<wxColour, int>(wxColour(0, 150, 136), StateColor::Normal));
@@ -353,6 +376,10 @@ ObjColorPanel::ObjColorPanel(wxWindow *                       parent,
         quick_set_sizer->Add(calc_approximate_match_btn_sizer, 0, wxALIGN_CENTER | wxALL, 0);
         quick_set_sizer->AddSpacer(FromDIP(10));
         quick_set_sizer->Add(calc_reset_btn_sizer, 0, wxALIGN_CENTER | wxALL, 0);
+        quick_set_sizer->AddSpacer(FromDIP(14));
+        m_optimize_colors_checkbox = new wxCheckBox(m_page_simple, wxID_ANY, _L("Optimize filament colors"));
+        m_optimize_colors_checkbox->SetToolTip(_L("Adjust base filament colors to minimize blend error for this model's palette."));
+        quick_set_sizer->Add(m_optimize_colors_checkbox, 0, wxALIGN_CENTER_VERTICAL, 0);
         quick_set_sizer->AddSpacer(FromDIP(10));
         m_sizer_simple->Add(quick_set_sizer, 0, wxEXPAND | wxLEFT, FromDIP(30));
 
@@ -423,6 +450,11 @@ void ObjColorPanel::update_filament_ids()
         wxGetApp().sidebar().add_custom_filament(m_new_add_colors[idx]);
         appended_filament_id_map.emplace(slot, next_physical_id++);
     }
+
+    // Apply optimized physical filament colors before creating mixed entries so that
+    // MixedFilamentManager computes display colors from the updated base colors.
+    if (!m_optimized_physical_colors.empty())
+        wxGetApp().sidebar().set_filament_colors_from_import(m_optimized_physical_colors);
 
     // Pass 2: add mixed filament proposals (after all physical adds, so virtual IDs are correct)
     for (int slot : selected_new_indices) {
@@ -647,6 +679,74 @@ void ObjColorPanel::deal_approximate_match_btn()
         m_cluster_map_filaments[i] = new_index;
     }
     update_keep_color_buttons();
+
+    // When the checkbox is checked and blends were proposed, run the optimizer
+    // to find physical filament colors that minimize total blend error.
+    if (m_optimize_colors_checkbox && m_optimize_colors_checkbox->IsChecked()
+        && !m_mix_proposals_by_slot.empty())
+    {
+        m_optimized_physical_colors = optimize_physical_colors(
+            m_cluster_colours, m_cluster_map_filaments, m_mix_proposals_by_slot, m_colours, 25);
+
+        // Reset proposals and combobox entries, then re-run matching with optimized colors
+        m_mix_proposals_by_slot.clear();
+        for (auto *item : m_result_icon_list) {
+            if (!item->bitmap_combox) continue;
+            while (item->bitmap_combox->GetCount() > m_colours.size() + 1)
+                item->bitmap_combox->DeleteOneItem(item->bitmap_combox->GetCount() - 1);
+        }
+        m_new_add_colors.clear();
+
+        auto calc_de_opt = [](wxColour c1, wxColour c2) {
+            float lab[2][3];
+            RGB2Lab(c1.Red(), c1.Green(), c1.Blue(), &lab[0][0], &lab[0][1], &lab[0][2]);
+            RGB2Lab(c2.Red(), c2.Green(), c2.Blue(), &lab[1][0], &lab[1][1], &lab[1][2]);
+            return DeltaE76(lab[0][0], lab[0][1], lab[0][2], lab[1][0], lab[1][1], lab[1][2]);
+        };
+        const int map_count_opt = static_cast<int>(m_colours.size());
+        for (size_t i = 0; i < m_cluster_colours.size(); ++i) {
+            auto c = m_cluster_colours[i];
+            std::vector<ColorDistValue> dists(map_count_opt);
+            for (int j = 0; j < map_count_opt; ++j) {
+                dists[j].distance = calc_de_opt(c, m_optimized_physical_colors[j]);
+                dists[j].id = j + 1;
+            }
+            std::sort(dists.begin(), dists.end(), [](auto &a, auto &b) { return a.distance < b.distance; });
+            int new_index_opt = dists[0].id;
+            if (dists[0].distance > BLEND_MATCH_THRESHOLD) {
+                MixProposal prop; float blend_de; wxColour blended;
+                if (find_best_blend(c, m_optimized_physical_colors, prop, blend_de, blended)
+                    && blend_de < dists[0].distance && blend_de < BLEND_ACCEPT_MAX_DE)
+                {
+                    int existing_slot = 0;
+                    for (auto &kv : m_mix_proposals_by_slot) {
+                        if (kv.second.component_a == prop.component_a &&
+                            kv.second.component_b == prop.component_b &&
+                            std::abs(kv.second.mix_b_percent - prop.mix_b_percent) <= 2) {
+                            existing_slot = kv.first; break;
+                        }
+                    }
+                    int slot = existing_slot > 0
+                        ? existing_slot
+                        : append_mixed_proposal_option(prop.component_a, prop.component_b,
+                                                       prop.mix_b_percent, blended);
+                    if (slot > 0) new_index_opt = slot;
+                }
+            }
+            m_result_icon_list[i]->bitmap_combox->SetSelection(new_index_opt);
+            m_cluster_map_filaments[i] = new_index_opt;
+        }
+
+        // Preview: update extruder icon buttons to show optimized colors
+        for (size_t i = 0; i < m_optimized_physical_colors.size() && i < m_extruder_icon_list.size(); ++i) {
+            auto bmp = *get_extruder_color_icon(
+                m_optimized_physical_colors[i].GetAsString(wxC2S_HTML_SYNTAX).ToStdString(),
+                std::to_string(i + 1), m_combox_icon_width, m_combox_icon_height);
+            m_extruder_icon_list[i]->SetBitmap(bmp);
+        }
+        m_warning_text->SetLabelText(_L("Note: Filament colors will be updated to the previewed colors on OK."));
+        update_keep_color_buttons();
+    }
 }
 
 bool ObjColorPanel::colors_are_equal(const wxColour &lhs, const wxColour &rhs)
@@ -728,6 +828,80 @@ int ObjColorPanel::append_mixed_proposal_option(unsigned int a, unsigned int b, 
     if (slot > 0)
         m_mix_proposals_by_slot.emplace(slot, MixProposal{a, b, pct});
     return slot;
+}
+
+std::vector<wxColour> ObjColorPanel::optimize_physical_colors(
+    const std::vector<wxColour>      &cluster_targets,
+    const std::vector<int>           &cluster_to_slot,
+    const std::map<int, MixProposal> &proposals,
+    const std::vector<wxColour>      &physicals,
+    int max_iter)
+{
+    const int N = static_cast<int>(physicals.size());
+    const int K = static_cast<int>(cluster_targets.size());
+
+    // Convert to Lab
+    std::vector<std::array<float,3>> P(N), T(K);
+    for (int i = 0; i < N; ++i)
+        RGB2Lab(physicals[i].Red(), physicals[i].Green(), physicals[i].Blue(),
+                &P[i][0], &P[i][1], &P[i][2]);
+    for (int k = 0; k < K; ++k)
+        RGB2Lab(cluster_targets[k].Red(), cluster_targets[k].Green(), cluster_targets[k].Blue(),
+                &T[k][0], &T[k][1], &T[k][2]);
+
+    // Map each cluster to its blend assignment (0-based filament indices)
+    struct BlendAsgn { int i, j; float t; };
+    std::vector<BlendAsgn> asgn(K, {-1, -1, 0.5f});
+    for (int k = 0; k < K; ++k) {
+        if (k >= static_cast<int>(cluster_to_slot.size())) continue;
+        auto it = proposals.find(cluster_to_slot[k]);
+        if (it != proposals.end()) {
+            asgn[k] = { static_cast<int>(it->second.component_a) - 1,
+                        static_cast<int>(it->second.component_b) - 1,
+                        it->second.mix_b_percent / 100.f };
+        }
+    }
+
+    for (int iter = 0; iter < max_iter; ++iter) {
+        // Step 1: re-estimate blend ratios via closed-form projection
+        for (int k = 0; k < K; ++k) {
+            if (asgn[k].i < 0) continue;
+            int i = asgn[k].i, j = asgn[k].j;
+            std::array<float,3> d = {P[j][0]-P[i][0], P[j][1]-P[i][1], P[j][2]-P[i][2]};
+            float len2 = d[0]*d[0] + d[1]*d[1] + d[2]*d[2];
+            if (len2 < 1e-6f) continue;
+            float dot = (T[k][0]-P[i][0])*d[0] + (T[k][1]-P[i][1])*d[1] + (T[k][2]-P[i][2])*d[2];
+            asgn[k].t = std::max(0.f, std::min(1.f, dot / len2));
+        }
+        // Step 2: coordinate descent — update each physical filament
+        auto P_new = P;
+        for (int f = 0; f < N; ++f) {
+            std::array<float,3> sum_ab = {0.f, 0.f, 0.f};
+            float sum_a2 = 0.f;
+            for (int k = 0; k < K; ++k) {
+                if (asgn[k].i < 0) continue;
+                int i = asgn[k].i, j = asgn[k].j;
+                float alpha = (f == i) ? (1.f - asgn[k].t) : (f == j ? asgn[k].t : 0.f);
+                if (alpha < 0.05f) continue;
+                int other = (f == i) ? j : i;
+                for (int c = 0; c < 3; ++c)
+                    sum_ab[c] += alpha * (T[k][c] - (1.f - alpha) * P[other][c]);
+                sum_a2 += alpha * alpha;
+            }
+            if (sum_a2 < 1e-6f) continue; // filament not in any blend — leave unchanged
+            for (int c = 0; c < 3; ++c) P_new[f][c] = sum_ab[c] / sum_a2;
+            // Gamut enforcement: Lab -> clamp to RGB cube -> Lab
+            wxColour clamped = lab_to_wxcolour(P_new[f][0], P_new[f][1], P_new[f][2]);
+            RGB2Lab(clamped.Red(), clamped.Green(), clamped.Blue(),
+                    &P_new[f][0], &P_new[f][1], &P_new[f][2]);
+        }
+        P = P_new;
+    }
+
+    std::vector<wxColour> result(N);
+    for (int i = 0; i < N; ++i)
+        result[i] = lab_to_wxcolour(P[i][0], P[i][1], P[i][2]);
+    return result;
 }
 
 int ObjColorPanel::find_filament_selection_by_color(const wxColour &color) const
@@ -1008,6 +1182,15 @@ void ObjColorPanel::deal_reset_btn()
     }
     m_new_add_colors.clear();
     m_mix_proposals_by_slot.clear();
+    if (!m_optimized_physical_colors.empty()) {
+        m_optimized_physical_colors.clear();
+        for (size_t i = 0; i < m_colours.size() && i < m_extruder_icon_list.size(); ++i) {
+            auto bmp = *get_extruder_color_icon(
+                m_colours[i].GetAsString(wxC2S_HTML_SYNTAX).ToStdString(),
+                std::to_string(i + 1), m_combox_icon_width, m_combox_icon_height);
+            m_extruder_icon_list[i]->SetBitmap(bmp);
+        }
+    }
     m_warning_text->SetLabelText("");
     update_keep_color_buttons();
 }

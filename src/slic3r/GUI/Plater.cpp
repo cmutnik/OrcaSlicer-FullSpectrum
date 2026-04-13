@@ -5201,6 +5201,27 @@ unsigned int Sidebar::add_mixed_filament_from_import(unsigned int component_a,
     return static_cast<unsigned int>(num_physical + mgr.enabled_count());
 }
 
+void Sidebar::set_filament_colors_from_import(const std::vector<wxColour> &colors)
+{
+    DynamicPrintConfig *cfg = &wxGetApp().preset_bundle->project_config;
+    auto *opt = cfg->option<ConfigOptionStrings>("filament_colour");
+    if (!opt) return;
+
+    for (size_t i = 0; i < colors.size() && i < opt->values.size(); ++i) {
+        if (!colors[i].IsOk()) continue;
+        opt->values[i] = colors[i].GetAsString(wxC2S_HTML_SYNTAX).ToStdString();
+    }
+    wxGetApp().preset_bundle->export_selections(*wxGetApp().app_config);
+
+    // EVT_FILAMENT_COLOR_CHANGED is handled by Plater::priv::on_filament_color_changed
+    // which calls update_multi_material_filament_presets() and update_mixed_filament_panel().
+    for (size_t i = 0; i < colors.size(); ++i) {
+        auto *evt = new wxCommandEvent(EVT_FILAMENT_COLOR_CHANGED);
+        evt->SetInt(static_cast<int>(i));
+        wxQueueEvent(wxGetApp().plater(), evt);
+    }
+}
+
 void Sidebar::add_custom_filament(wxColour new_col) {
     if (p->combos_filament.size() >= MAXIMUM_EXTRUDER_NUMBER) return;
 

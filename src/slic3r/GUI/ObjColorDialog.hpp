@@ -68,6 +68,12 @@ private:
     static bool find_best_blend(const wxColour &target,
                                 const std::vector<wxColour> &physicals,
                                 MixProposal &out, float &out_de, wxColour &out_blended);
+    static std::vector<wxColour> optimize_physical_colors(
+        const std::vector<wxColour>      &cluster_targets,
+        const std::vector<int>           &cluster_to_slot,
+        const std::map<int, MixProposal> &proposals,
+        const std::vector<wxColour>      &physicals,
+        int max_iter = 25);
     void update_keep_color_buttons();
     static bool colors_are_equal(const wxColour &lhs, const wxColour &rhs);
 private:
@@ -103,6 +109,8 @@ private:
     std::vector<wxColour> m_cluster_colours;//from_algo and show left
     std::vector<wxColour> m_new_add_colors;
     std::map<int, MixProposal> m_mix_proposals_by_slot; // combobox slot -> mix spec
+    wxCheckBox*           m_optimize_colors_checkbox{nullptr};
+    std::vector<wxColour> m_optimized_physical_colors; // empty = no optimization ran
     //algo result
     std::vector<Slic3r::RGBA> m_cluster_colors_from_algo;
     std::vector<int>          m_cluster_labels_from_algo;

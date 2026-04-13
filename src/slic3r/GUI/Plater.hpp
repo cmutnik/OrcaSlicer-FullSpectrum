@@ -156,6 +156,7 @@ public:
     unsigned int add_mixed_filament_from_import(unsigned int component_a,
                                                  unsigned int component_b,
                                                  int          mix_b_percent);
+    void set_filament_colors_from_import(const std::vector<wxColour> &colors);
     void edit_filament();
 
     void on_filaments_delete(size_t filament_id);
