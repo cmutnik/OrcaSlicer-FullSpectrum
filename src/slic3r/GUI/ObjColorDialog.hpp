@@ -75,6 +75,7 @@ private:
         const std::vector<int>           &cluster_to_slot,
         const std::map<int, MixProposal> &proposals,
         const std::vector<wxColour>      &physicals,
+        const std::vector<bool>          &locked,  // true = do NOT move this filament
         int max_iter = 25);
     void update_keep_color_buttons();
     static bool colors_are_equal(const wxColour &lhs, const wxColour &rhs);
@@ -90,7 +91,8 @@ private:
     Button *    m_quick_keep_all_colors_btn{nullptr};
     Button *    m_quick_add_btn{nullptr};
     Button *    m_quick_reset_btn{nullptr};
-    std::vector<wxButton*> m_extruder_icon_list;
+    std::vector<wxButton*>    m_extruder_icon_list;
+    std::vector<wxCheckBox*>  m_filament_lock_checkboxes; // per-filament "allow color change" checkbox
     std::vector<wxButton*> m_color_cluster_icon_list;//need modeify
     std::vector<wxStaticText*> m_color_cluster_text_list;//need modeify
     std::vector<wxSizer*> m_row_sizer_list;         // control show or not

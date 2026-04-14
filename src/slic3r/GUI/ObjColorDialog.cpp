@@ -345,7 +345,7 @@ ObjColorPanel::ObjColorPanel(wxWindow *                       parent,
         m_sizer_simple->Add(specify_cluster_sizer, 0, wxEXPAND | wxLEFT, FromDIP(20));
 
         wxBoxSizer *  current_filaments_title_sizer  = new wxBoxSizer(wxHORIZONTAL);
-        wxStaticText *current_filaments_title = new wxStaticText(m_page_simple, wxID_ANY, _L("Current filament colors:"));
+        wxStaticText *current_filaments_title = new wxStaticText(m_page_simple, wxID_ANY, _L("Current filament colors (\u2611 = allow optimizer to change):"));
         current_filaments_title->SetFont(Label::Head_14);
         current_filaments_title_sizer->Add(current_filaments_title, 0, wxALIGN_CENTER | wxALL, FromDIP(5));
         m_sizer_simple->Add(current_filaments_title_sizer, 0, wxEXPAND | wxLEFT, FromDIP(20));
@@ -584,13 +584,25 @@ wxBoxSizer *ObjColorPanel::create_reset_btn_sizer(wxWindow *parent)
 
 wxBoxSizer *ObjColorPanel::create_extruder_icon_and_rgba_sizer(wxWindow *parent, int id, const wxColour &color)
 {
-    auto icon_sizer = new wxBoxSizer(wxHORIZONTAL);
-    wxButton *icon       = new wxButton(parent, wxID_ANY, {}, wxDefaultPosition, ICON_SIZE, wxBORDER_NONE | wxBU_AUTODRAW);
+    // Vertical sizer: color icon on top, lock checkbox below
+    auto outer_sizer = new wxBoxSizer(wxVERTICAL);
+
+    wxButton *icon = new wxButton(parent, wxID_ANY, {}, wxDefaultPosition, ICON_SIZE, wxBORDER_NONE | wxBU_AUTODRAW);
     icon->SetBitmap(*get_extruder_color_icon(color.GetAsString(wxC2S_HTML_SYNTAX).ToStdString(), std::to_string(id + 1), FromDIP(16), FromDIP(16)));
     icon->SetCanFocus(false);
     m_extruder_icon_list.emplace_back(icon);
-    icon_sizer->Add(icon, 0, wxALIGN_CENTER | wxALIGN_CENTER_VERTICAL, FromDIP(10)); // wxALIGN_CENTER_VERTICAL | wxTOP | wxBOTTOM
+    outer_sizer->Add(icon, 0, wxALIGN_CENTER, 0);
 
+    // Checkbox: checked = allow optimizer to change this filament's color
+    wxCheckBox *lock_cb = new wxCheckBox(parent, wxID_ANY, wxEmptyString);
+    lock_cb->SetValue(true); // default: changeable
+    lock_cb->SetToolTip(_L("Allow optimizer to change this filament color"));
+    m_filament_lock_checkboxes.emplace_back(lock_cb);
+    outer_sizer->Add(lock_cb, 0, wxALIGN_CENTER | wxTOP, FromDIP(2));
+
+    // Wrap in a small horizontal sizer with right spacer to match original spacing
+    auto icon_sizer = new wxBoxSizer(wxHORIZONTAL);
+    icon_sizer->Add(outer_sizer, 0, wxALIGN_CENTER_VERTICAL, 0);
     icon_sizer->AddSpacer(FromDIP(5));
     return icon_sizer;
 }
@@ -782,8 +794,13 @@ void ObjColorPanel::deal_approximate_match_btn()
     if (m_optimize_colors_checkbox && m_optimize_colors_checkbox->IsChecked()
         && !m_mix_proposals_by_slot.empty())
     {
+        // Build locked vector: true = locked (checkbox unchecked = don't change)
+        std::vector<bool> locked(m_colours.size(), false);
+        for (size_t li = 0; li < m_filament_lock_checkboxes.size() && li < locked.size(); ++li)
+            locked[li] = !m_filament_lock_checkboxes[li]->GetValue(); // unchecked = locked
+
         m_optimized_physical_colors = optimize_physical_colors(
-            m_cluster_colours, m_cluster_map_filaments, m_mix_proposals_by_slot, m_colours, 25);
+            m_cluster_colours, m_cluster_map_filaments, m_mix_proposals_by_slot, m_colours, locked, 25);
 
         // Reset proposals and combobox entries, then re-run matching with optimized colors
         m_mix_proposals_by_slot.clear();
@@ -932,6 +949,7 @@ std::vector<wxColour> ObjColorPanel::optimize_physical_colors(
     const std::vector<int>           &cluster_to_slot,
     const std::map<int, MixProposal> &proposals,
     const std::vector<wxColour>      &physicals,
+    const std::vector<bool>          &locked,
     int max_iter)
 {
     const int N = static_cast<int>(physicals.size());
@@ -973,6 +991,9 @@ std::vector<wxColour> ObjColorPanel::optimize_physical_colors(
         // Step 2: coordinate descent — update each physical filament
         auto P_new = P;
         for (int f = 0; f < N; ++f) {
+            // Skip filaments the user has locked (checkbox unchecked)
+            if (f < static_cast<int>(locked.size()) && locked[f]) continue;
+
             std::array<float,3> sum_ab = {0.f, 0.f, 0.f};
             float sum_a2 = 0.f;
             for (int k = 0; k < K; ++k) {
