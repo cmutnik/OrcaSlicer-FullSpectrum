@@ -1670,6 +1670,9 @@ void Layer::make_ironing()
         const PrintRegionConfig *slope_cfg = is_slope_mode
             ? &ironing_params.layerm->region().config()
             : nullptr;
+        // Bounding-box center of the current slope band polygon, used in Z-step
+        // ordering to distinguish inner (closer = high Z) from outer (far = low Z).
+        Vec2d slope_band_center = Vec2d::Zero();
 
         Surface surface_fill(stTop, ExPolygon());
         for (ExPolygon &expoly : ironing_areas) {
@@ -1701,13 +1704,43 @@ void Layer::make_ironing()
 
                 // Orient ironing lines parallel to the slope's contour so they run
                 // *along* the slope rather than cutting across the narrow band.
-                // Use the bounding-box major axis as a proxy for the contour direction.
-                BoundingBox bbox = expoly.contour.bounding_box();
-                double bbox_w = unscale<double>(bbox.size()(0));
-                double bbox_h = unscale<double>(bbox.size()(1));
-                // Major axis angle: 0° if wider than tall, 90° if taller than wide.
-                double contour_angle = (bbox_w >= bbox_h) ? 0.0 : M_PI / 2.0;
-                f->angle = float(contour_angle);
+                // Use 2D PCA on the contour points to find the true principal axis —
+                // this handles curved bands (e.g. a figurine torso arc) correctly.
+                {
+                    Vec2d centroid_pts = Vec2d::Zero();
+                    for (const Point &pt : expoly.contour.points)
+                        centroid_pts += Vec2d(unscale<double>(pt.x()), unscale<double>(pt.y()));
+                    centroid_pts /= (double)expoly.contour.points.size();
+
+                    double cxx = 0, cxy = 0, cyy = 0;
+                    for (const Point &pt : expoly.contour.points) {
+                        const double dx = unscale<double>(pt.x()) - centroid_pts.x();
+                        const double dy = unscale<double>(pt.y()) - centroid_pts.y();
+                        cxx += dx * dx;
+                        cxy += dx * dy;
+                        cyy += dy * dy;
+                    }
+
+                    // Eigenvector for the larger eigenvalue of the 2x2 covariance matrix.
+                    // λ1 = (cxx+cyy)/2 + sqrt(((cxx-cyy)/2)^2 + cxy^2)
+                    // v1 = [λ1 - cyy, cxy]
+                    const double disc    = std::sqrt(0.25 * (cxx - cyy) * (cxx - cyy) + cxy * cxy);
+                    const double lambda1 = 0.5 * (cxx + cyy) + disc;
+                    double vx, vy;
+                    if (std::abs(cxy) > EPSILON) {
+                        vx = lambda1 - cyy;
+                        vy = cxy;
+                    } else {
+                        vx = (cxx >= cyy) ? 1.0 : 0.0;
+                        vy = (cxx >= cyy) ? 0.0 : 1.0;
+                    }
+                    f->angle = float(std::atan2(vy, vx));
+                }
+                // Store bounding-box center for inner/outer Z-step ordering below.
+                slope_band_center = {
+                    unscale<double>(expoly.contour.bounding_box().center().x()),
+                    unscale<double>(expoly.contour.bounding_box().center().y())
+                };
             }
             // ---- End slope detection ----
 
@@ -1739,14 +1772,29 @@ void Layer::make_ironing()
                 // model_object()->raw_indexed_triangle_set(). The GCode pipeline
                 // already interpolates z_ratio per-segment in _extrude().
                 if (is_slope_mode && slope_cfg->ironing_slope_zstep.value && extrusion_height > EPSILON) {
-                    const double z_ratio_min  = 1.0 - default_layer_height / extrusion_height;
-                    const size_t n            = polylines.size();
-                    ExtrusionPath base_path(erIroning, flow_mm3_per_mm, extrusion_width, float(extrusion_height));
+                    const double z_ratio_min = 1.0 - default_layer_height / extrusion_height;
+                    const size_t n           = polylines.size();
+
+                    // Sort lines so inner edge (closer to band bbox center) gets z_ratio=1.0
+                    // and outer edge (farther from center) gets z_ratio_min.
+                    // This makes Z rise from the outer step-edge inward, following the slope.
+                    std::vector<std::pair<double, size_t>> dist_idx;
+                    dist_idx.reserve(n);
                     for (size_t li = 0; li < n; ++li) {
-                        // Interpolate from z_ratio_min (first/outer line) to 1.0 (last/inner line).
-                        const double t     = (n > 1) ? (double)li / (double)(n - 1) : 0.0;
-                        const double z_rat = z_ratio_min + t * (1.0 - z_ratio_min);
-                        // Constant Z per line (slope_begin == slope_end).
+                        const Point &mid_pt = polylines[li].points[polylines[li].size() / 2];
+                        const Vec2d  mid_mm{unscale<double>(mid_pt.x()), unscale<double>(mid_pt.y())};
+                        dist_idx.emplace_back((mid_mm - slope_band_center).squaredNorm(), li);
+                    }
+                    // ascending: index 0 = innermost (smallest dist), index n-1 = outermost
+                    std::sort(dist_idx.begin(), dist_idx.end());
+
+                    ExtrusionPath base_path(erIroning, flow_mm3_per_mm, extrusion_width, float(extrusion_height));
+                    for (size_t rank = 0; rank < n; ++rank) {
+                        const size_t li = dist_idx[rank].second;
+                        // inner (rank=0) → z_ratio=1.0 (top of layer)
+                        // outer (rank=n-1) → z_ratio=z_ratio_min (bottom of step)
+                        const double t     = (n > 1) ? (double)rank / (double)(n - 1) : 0.0;
+                        const double z_rat = 1.0 - t * (1.0 - z_ratio_min);
                         const ExtrusionPathSloped::Slope slope{z_rat, 1.0};
                         eec->entities.push_back(
                             new ExtrusionPathSloped(std::move(polylines[li]), base_path, slope, slope));
