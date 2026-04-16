@@ -87,6 +87,8 @@ set(SLIC3R_GUI_SOURCES
     GUI/ConnectPrinter.hpp
     GUI/CreatePresetsDialog.cpp
     GUI/CreatePresetsDialog.hpp
+    GUI/FilamentInventoryDialog.cpp
+    GUI/FilamentInventoryDialog.hpp
     GUI/DailyTips.cpp
     GUI/DailyTips.hpp
     GUI/DesktopIntegrationDialog.cpp

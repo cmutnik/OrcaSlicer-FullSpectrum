@@ -64,6 +64,7 @@
 #include "NotificationManager.hpp"
 #include "MarkdownTip.hpp"
 #include "NetworkTestDialog.hpp"
+#include "FilamentInventoryDialog.hpp"
 #include "ConfigWizard.hpp"
 #include "Widgets/WebView.hpp"
 #include "DailyTips.hpp"
@@ -2505,6 +2506,16 @@ void MainFrame::init_menubar_as_editor()
             []() { return true; }, this);
 
         append_submenu(fileMenu, export_menu, wxID_ANY, _L("Export"), "");
+
+        fileMenu->AppendSeparator();
+        append_menu_item(fileMenu, wxID_ANY,
+            _L("Filament Inventory..."), _L("Manage filament spools and track usage"),
+            [this](wxCommandEvent&) {
+                if (!m_filament_inv_dlg)
+                    m_filament_inv_dlg = new FilamentInventoryDialog(this);
+                m_filament_inv_dlg->refresh();
+                m_filament_inv_dlg->ShowModal();
+            }, "", nullptr, []() { return true; }, this);
 
         fileMenu->AppendSeparator();
 

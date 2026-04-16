@@ -17,6 +17,7 @@
 #include "slic3r/Utils/PresetUpdater.hpp"
 #include "slic3r/Config/Version.hpp"
 #include "libslic3r/MixedFilament.hpp"
+#include "libslic3r/FilamentSpool.hpp"
 
 // Localization headers: include libslic3r version first so everything in this file
 // uses the slic3r/GUI version (the macros will take precedence over the functions).
@@ -2753,6 +2754,10 @@ bool GUI_App::on_init_inner()
         }
     //}
     profiler.mark("preset_bundle->load_presets");
+
+    // Load spool inventory from persistent storage
+    Slic3r::SpoolInventory::get().load(
+        (boost::filesystem::path(Slic3r::data_dir()) / "spool_inventory.json").string());
 
 #ifdef WIN32
 #if !wxVERSION_EQUAL_OR_GREATER_THAN(3,1,3)

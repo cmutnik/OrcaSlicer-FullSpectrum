@@ -173,6 +173,7 @@
 #include "PlateSettingsDialog.hpp"
 #include "DailyTips.hpp"
 #include "CreatePresetsDialog.hpp"
+#include "FilamentInventoryDialog.hpp"
 #include "FileArchiveDialog.hpp"
 #include "StepMeshDialog.hpp"
 #include "CloneDialog.hpp"
@@ -13605,15 +13606,46 @@ void Plater::priv::on_export_began(wxCommandEvent& evt)
 
 void Plater::priv::on_export_finished(wxCommandEvent& evt)
 {
-#if 0
-    //BBS: also export 3mf to the same directory for debugging
-    std::string gcode_path_str(evt.GetString().ToUTF8().data());
-    fs::path gcode_path(gcode_path_str);
+    // Offer filament usage logging only if the inventory has active spools
+    auto& inv = Slic3r::SpoolInventory::get();
+    if (!inv.is_loaded()) return;
+    bool has_active = std::any_of(inv.spools().begin(), inv.spools().end(),
+                                  [](const Slic3r::FilamentSpool& s) { return !s.archived; });
+    if (!has_active) return;
 
-    if (q) {
-        q->export_3mf(gcode_path.replace_extension(".3mf"), SaveStrategy::Silence); // BBS: silence
+    // Get print stats from the current plate
+    PartPlate* plate = partplate_list.get_curr_plate();
+    if (!plate || !plate->fff_print()) return;
+    const PrintStatistics& stats = plate->fff_print()->print_statistics();
+    if (stats.filament_stats.empty()) return;
+
+    // Build per-extruder usage (model weight; flush_g left as 0 for now)
+    const DynamicPrintConfig& cfg = plate->fff_print()->full_print_config();
+    const auto* densities = cfg.opt<ConfigOptionFloats>("filament_density");
+    std::vector<ExtruderUsage> usage;
+    for (const auto& kv : stats.filament_stats) {
+        size_t ext_idx  = kv.first;
+        double vol_mm3  = kv.second;
+        double density  = (densities && ext_idx < densities->values.size())
+                              ? densities->values[ext_idx] : 1.24;
+        ExtruderUsage eu;
+        eu.extruder_idx = (int)ext_idx;
+        eu.model_g      = vol_mm3 * density * 0.001;  // mm³ × g/cm³ × 0.001 = g
+        eu.flush_g      = 0.0;
+        eu.spool_id     = "";
+        usage.push_back(eu);
     }
-#endif
+    if (usage.empty()) return;
+
+    std::string print_name = fs::path(evt.GetString().ToUTF8().data()).stem().string();
+
+    SpoolLogUsageDialog dlg(q, usage, print_name);
+    if (dlg.ShowModal() != wxID_OK) return;
+
+    for (const auto& row : dlg.get_result()) {
+        if (!row.spool_id.empty())
+            inv.record_print(row.spool_id, row.model_g, row.flush_g, print_name);
+    }
 }
 
 void Plater::priv::on_slicing_began()
