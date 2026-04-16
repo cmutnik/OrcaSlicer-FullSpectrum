@@ -1556,7 +1556,8 @@ static bool split_masks_pointillism_stripes(const ExPolygons               &sour
                                             size_t                           layer_id,
                                             coord_t                          stripe_pitch,
                                             bool                             flip_orientation,
-                                            std::vector<ExPolygons>         &out_by_extruder)
+                                            std::vector<ExPolygons>         &out_by_extruder,
+                                            bool                             fix_orientation = false)
 {
     if (source_masks.empty() || sequence.empty() || num_physical == 0 || stripe_pitch <= 0)
         return false;
@@ -1579,10 +1580,19 @@ static bool split_masks_pointillism_stripes(const ExPolygons               &sour
 
     std::vector<Polygons> stripe_polygons_by_slot(slot_count);
     const bool vertical_base = (bbox.max.x() - bbox.min.x()) >= (bbox.max.y() - bbox.min.y());
-    // Alternate stripe orientation every layer so different faces of the model
-    // receive mixed-color variation instead of long single-direction bands.
-    const bool layer_alternates = (layer_id & 1) != 0;
-    bool       vertical = layer_alternates ? !vertical_base : vertical_base;
+    bool vertical;
+    if (fix_orientation) {
+        // SameLayerAlternating: keep stripe direction constant across layers so
+        // only the starting-filament phase shifts, producing the A,B,A... /
+        // B,A,B... interleave effect without also rotating stripe direction.
+        vertical = vertical_base;
+    } else {
+        // SameLayerPointillisme: alternate stripe orientation every layer so
+        // different faces receive mixed-colour variation rather than long
+        // single-direction bands.
+        const bool layer_alternates = (layer_id & 1) != 0;
+        vertical = layer_alternates ? !vertical_base : vertical_base;
+    }
     if (flip_orientation)
         vertical = !vertical;
 
@@ -1662,6 +1672,344 @@ static bool split_masks_pointillism_stripes(const ExPolygons               &sour
     return true;
 }
 
+// ---------------------------------------------------------------------------
+// Checkerboard: 2D grid of cells; (col + row + layer_id) % slot_count selects
+// the filament, so the pattern offsets one cell each layer.
+// ---------------------------------------------------------------------------
+static bool split_masks_checkerboard(const ExPolygons               &source_masks,
+                                     const std::vector<unsigned int> &sequence,
+                                     size_t                           num_physical,
+                                     size_t                           layer_id,
+                                     coord_t                          cell_pitch,
+                                     std::vector<ExPolygons>         &out_by_extruder)
+{
+    if (source_masks.empty() || sequence.empty() || num_physical == 0 || cell_pitch <= 0)
+        return false;
+
+    const BoundingBox bbox = get_extents(source_masks);
+    if (!bbox.defined || bbox.min.x() >= bbox.max.x() || bbox.min.y() >= bbox.max.y())
+        return false;
+
+    out_by_extruder.assign(num_physical, ExPolygons());
+    const size_t slot_count = sequence.size();
+
+    auto align_down = [cell_pitch](coord_t v) {
+        coord_t rem = v % cell_pitch;
+        if (rem < 0) rem += cell_pitch;
+        return v - rem;
+    };
+
+    const coord_t x0_aligned = align_down(bbox.min.x());
+    const coord_t y0_aligned = align_down(bbox.min.y());
+
+    std::vector<Polygons> cell_polygons_by_slot(slot_count);
+    size_t row = 0;
+    for (coord_t y = y0_aligned; y < bbox.max.y(); y += cell_pitch, ++row) {
+        const coord_t cy0 = std::max(y, bbox.min.y());
+        const coord_t cy1 = std::min<coord_t>(y + cell_pitch, bbox.max.y());
+        if (cy1 <= cy0) continue;
+        size_t col = 0;
+        for (coord_t x = x0_aligned; x < bbox.max.x(); x += cell_pitch, ++col) {
+            const coord_t cx0 = std::max(x, bbox.min.x());
+            const coord_t cx1 = std::min<coord_t>(x + cell_pitch, bbox.max.x());
+            if (cx1 <= cx0) continue;
+            const size_t slot = (col + row + layer_id) % slot_count;
+            cell_polygons_by_slot[slot].emplace_back(
+                BoundingBox(Point(cx0, cy0), Point(cx1, cy1)).polygon());
+        }
+    }
+
+    unsigned int fallback_extruder = sequence.empty() ? 0 : sequence[0];
+    for (size_t slot = 0; slot < slot_count; ++slot) {
+        const unsigned int extruder_id = sequence[slot];
+        if (extruder_id == 0 || extruder_id > num_physical || cell_polygons_by_slot[slot].empty())
+            continue;
+        ExPolygons clipped = intersection_ex(source_masks, cell_polygons_by_slot[slot], ApplySafetyOffset::Yes);
+        if (!clipped.empty())
+            append(out_by_extruder[extruder_id - 1], std::move(clipped));
+    }
+
+    // Remainder → fallback
+    ExPolygons assigned_union;
+    for (const ExPolygons &m : out_by_extruder) append(assigned_union, m);
+    if (assigned_union.size() > 1) assigned_union = union_ex(assigned_union);
+    ExPolygons remainder = diff_ex(source_masks, assigned_union, ApplySafetyOffset::Yes);
+    if (!remainder.empty() && fallback_extruder >= 1 && fallback_extruder <= num_physical)
+        append(out_by_extruder[fallback_extruder - 1], std::move(remainder));
+    return true;
+}
+
+// ---------------------------------------------------------------------------
+// Diagonal stripes: axis-aligned rectangles rotated around the bbox center.
+// ---------------------------------------------------------------------------
+static Polygon make_rotated_stripe_rect(coord_t x0, coord_t x1,
+                                        coord_t y_lo, coord_t y_hi,
+                                        double sin_a, double cos_a,
+                                        const Point &center)
+{
+    // Four corners of the axis-aligned stripe, rotated around center.
+    auto rotate_pt = [&](coord_t x, coord_t y) -> Point {
+        const double dx = double(x - center.x());
+        const double dy = double(y - center.y());
+        return Point(center.x() + coord_t(dx * cos_a - dy * sin_a),
+                     center.y() + coord_t(dx * sin_a + dy * cos_a));
+    };
+    Polygon p;
+    p.points = { rotate_pt(x0, y_lo), rotate_pt(x1, y_lo),
+                 rotate_pt(x1, y_hi), rotate_pt(x0, y_hi) };
+    return p;
+}
+
+static bool split_masks_diagonal_stripes(const ExPolygons               &source_masks,
+                                         const std::vector<unsigned int> &sequence,
+                                         size_t                           num_physical,
+                                         size_t                           layer_id,
+                                         coord_t                          stripe_pitch,
+                                         float                            angle_deg,
+                                         std::vector<ExPolygons>         &out_by_extruder)
+{
+    if (source_masks.empty() || sequence.empty() || num_physical == 0 || stripe_pitch <= 0)
+        return false;
+
+    const BoundingBox bbox = get_extents(source_masks);
+    if (!bbox.defined || bbox.min.x() >= bbox.max.x() || bbox.min.y() >= bbox.max.y())
+        return false;
+
+    out_by_extruder.assign(num_physical, ExPolygons());
+    const size_t slot_count = sequence.size();
+    const size_t phase      = slot_count > 0 ? (layer_id % slot_count) : 0;
+
+    const double angle_rad = double(angle_deg) * M_PI / 180.0;
+    const double sin_a     = std::sin(angle_rad);
+    const double cos_a     = std::cos(angle_rad);
+    const Point  center((bbox.min.x() + bbox.max.x()) / 2,
+                        (bbox.min.y() + bbox.max.y()) / 2);
+
+    // Enlarged bounds to cover the rotated region fully.
+    const coord_t half_diag = coord_t(std::hypot(double(bbox.max.x() - bbox.min.x()),
+                                                  double(bbox.max.y() - bbox.min.y())) / 2.0) + stripe_pitch;
+    const coord_t x_start   = center.x() - half_diag;
+    const coord_t x_end     = center.x() + half_diag;
+    const coord_t y_lo      = center.y() - half_diag;
+    const coord_t y_hi      = center.y() + half_diag;
+
+    std::vector<Polygons> stripe_polygons_by_slot(slot_count);
+    size_t stripe_idx = 0;
+    for (coord_t x = x_start; x < x_end; x += stripe_pitch, ++stripe_idx) {
+        const size_t slot = (stripe_idx + phase) % slot_count;
+        stripe_polygons_by_slot[slot].emplace_back(
+            make_rotated_stripe_rect(x, x + stripe_pitch, y_lo, y_hi, sin_a, cos_a, center));
+    }
+
+    unsigned int fallback_extruder = sequence.empty() ? 0 : sequence[0];
+    for (size_t slot = 0; slot < slot_count; ++slot) {
+        const unsigned int extruder_id = sequence[slot];
+        if (extruder_id == 0 || extruder_id > num_physical || stripe_polygons_by_slot[slot].empty())
+            continue;
+        ExPolygons clipped = intersection_ex(source_masks, stripe_polygons_by_slot[slot], ApplySafetyOffset::Yes);
+        if (!clipped.empty())
+            append(out_by_extruder[extruder_id - 1], std::move(clipped));
+    }
+
+    ExPolygons assigned_union;
+    for (const ExPolygons &m : out_by_extruder) append(assigned_union, m);
+    if (assigned_union.size() > 1) assigned_union = union_ex(assigned_union);
+    ExPolygons remainder = diff_ex(source_masks, assigned_union, ApplySafetyOffset::Yes);
+    if (!remainder.empty() && fallback_extruder >= 1 && fallback_extruder <= num_physical)
+        append(out_by_extruder[fallback_extruder - 1], std::move(remainder));
+    return true;
+}
+
+// ---------------------------------------------------------------------------
+// CrossHatch: two sets of diagonal stripes at +angle/-angle.
+// Intersection regions → slot 0 (comp_a), only-plus regions → slot 1 (comp_b),
+// remainder (neither) → fallback.
+// ---------------------------------------------------------------------------
+static bool split_masks_crosshatch(const ExPolygons               &source_masks,
+                                   const std::vector<unsigned int> &sequence,
+                                   size_t                           num_physical,
+                                   size_t                           layer_id,
+                                   coord_t                          stripe_pitch,
+                                   float                            angle_deg,
+                                   std::vector<ExPolygons>         &out_by_extruder)
+{
+    if (source_masks.empty() || sequence.size() < 2 || num_physical == 0 || stripe_pitch <= 0)
+        return false;
+
+    const BoundingBox bbox = get_extents(source_masks);
+    if (!bbox.defined || bbox.min.x() >= bbox.max.x() || bbox.min.y() >= bbox.max.y())
+        return false;
+
+    out_by_extruder.assign(num_physical, ExPolygons());
+    const size_t phase = layer_id % 2;
+
+    const double angle_rad = double(angle_deg) * M_PI / 180.0;
+    const double sin_p     = std::sin( angle_rad);
+    const double cos_p     = std::cos( angle_rad);
+    const double sin_m     = std::sin(-angle_rad);
+    const double cos_m     = std::cos(-angle_rad);
+    const Point  center((bbox.min.x() + bbox.max.x()) / 2,
+                        (bbox.min.y() + bbox.max.y()) / 2);
+    const coord_t half_diag = coord_t(std::hypot(double(bbox.max.x() - bbox.min.x()),
+                                                  double(bbox.max.y() - bbox.min.y())) / 2.0) + stripe_pitch;
+    const coord_t x_start   = center.x() - half_diag;
+    const coord_t x_end     = center.x() + half_diag;
+    const coord_t y_lo      = center.y() - half_diag;
+    const coord_t y_hi      = center.y() + half_diag;
+
+    // Build stripes for +angle (even stripes only → every other stripe filled)
+    Polygons set_plus, set_minus;
+    size_t stripe_idx = 0;
+    for (coord_t x = x_start; x < x_end; x += stripe_pitch, ++stripe_idx) {
+        if ((stripe_idx + phase) % 2 == 0)
+            set_plus.emplace_back(make_rotated_stripe_rect(x, x + stripe_pitch, y_lo, y_hi, sin_p, cos_p, center));
+        else
+            set_minus.emplace_back(make_rotated_stripe_rect(x, x + stripe_pitch, y_lo, y_hi, sin_m, cos_m, center));
+    }
+
+    const ExPolygons src_clip = intersection_ex(source_masks, set_plus, ApplySafetyOffset::Yes);
+    const ExPolygons minus_clip = intersection_ex(source_masks, set_minus, ApplySafetyOffset::Yes);
+
+    // Region A: +angle only
+    if (!src_clip.empty() && sequence[0] >= 1 && sequence[0] <= num_physical)
+        append(out_by_extruder[sequence[0] - 1], src_clip);
+    // Region B: -angle only
+    if (!minus_clip.empty() && sequence[1] >= 1 && sequence[1] <= num_physical)
+        append(out_by_extruder[sequence[1] - 1], minus_clip);
+
+    // Remainder
+    ExPolygons assigned_union;
+    for (const ExPolygons &m : out_by_extruder) append(assigned_union, m);
+    if (assigned_union.size() > 1) assigned_union = union_ex(assigned_union);
+    ExPolygons remainder = diff_ex(source_masks, assigned_union, ApplySafetyOffset::Yes);
+    if (!remainder.empty() && sequence[0] >= 1 && sequence[0] <= num_physical)
+        append(out_by_extruder[sequence[0] - 1], std::move(remainder));
+    return true;
+}
+
+// ---------------------------------------------------------------------------
+// IslandCycling: each disconnected ExPolygon island gets a filament assigned
+// by (island_index + layer_id) % slot_count.
+// ---------------------------------------------------------------------------
+static bool split_masks_island_cycling(const ExPolygons               &source_masks,
+                                       const std::vector<unsigned int> &sequence,
+                                       size_t                           num_physical,
+                                       size_t                           layer_id,
+                                       std::vector<ExPolygons>         &out_by_extruder)
+{
+    if (source_masks.empty() || sequence.empty() || num_physical == 0)
+        return false;
+
+    out_by_extruder.assign(num_physical, ExPolygons());
+    const size_t slot_count = sequence.size();
+
+    // Sort islands by centroid (X then Y) for stable ordering.
+    std::vector<size_t> order(source_masks.size());
+    std::iota(order.begin(), order.end(), 0);
+    std::stable_sort(order.begin(), order.end(), [&](size_t a, size_t b) {
+        const Point ca = source_masks[a].contour.centroid();
+        const Point cb = source_masks[b].contour.centroid();
+        return ca.x() != cb.x() ? ca.x() < cb.x() : ca.y() < cb.y();
+    });
+
+    for (size_t i = 0; i < order.size(); ++i) {
+        const size_t       slot        = (i + layer_id) % slot_count;
+        const unsigned int extruder_id = sequence[slot];
+        if (extruder_id < 1 || extruder_id > num_physical) continue;
+        out_by_extruder[extruder_id - 1].emplace_back(source_masks[order[i]]);
+    }
+    return true;
+}
+
+// ---------------------------------------------------------------------------
+// ConcentricRings: rings at ring_pitch_mm intervals from the centroid.
+// ---------------------------------------------------------------------------
+static bool split_masks_concentric_rings(const ExPolygons               &source_masks,
+                                         const std::vector<unsigned int> &sequence,
+                                         size_t                           num_physical,
+                                         size_t                           layer_id,
+                                         coord_t                          ring_pitch,
+                                         std::vector<ExPolygons>         &out_by_extruder)
+{
+    if (source_masks.empty() || sequence.empty() || num_physical == 0 || ring_pitch <= 0)
+        return false;
+
+    const BoundingBox bbox = get_extents(source_masks);
+    if (!bbox.defined)
+        return false;
+
+    out_by_extruder.assign(num_physical, ExPolygons());
+    const size_t slot_count = sequence.size();
+    const size_t phase      = layer_id % slot_count;
+
+    // Max ring count to cover the bounding box diagonal.
+    const coord_t max_r = coord_t(std::hypot(double(bbox.max.x() - bbox.min.x()),
+                                              double(bbox.max.y() - bbox.min.y())) / 2.0) + ring_pitch;
+    const size_t  ring_count = size_t(max_r / ring_pitch) + 1;
+
+    ExPolygons remaining = source_masks;
+    for (size_t ring = 0; ring < ring_count && !remaining.empty(); ++ring) {
+        const coord_t outer_r = coord_t((ring + 1) * ring_pitch);
+        // Expand BoundingBox into a circle approximation using offset.
+        ExPolygons outer_disk = offset_ex(source_masks, float(outer_r));
+        ExPolygons inner_disk = ring > 0 ? offset_ex(source_masks, float(ring * ring_pitch)) : ExPolygons();
+
+        ExPolygons annulus = inner_disk.empty()
+            ? outer_disk
+            : diff_ex(outer_disk, inner_disk, ApplySafetyOffset::Yes);
+
+        ExPolygons ring_region = intersection_ex(remaining, annulus, ApplySafetyOffset::Yes);
+        if (ring_region.empty()) continue;
+
+        const size_t       slot        = (ring + phase) % slot_count;
+        const unsigned int extruder_id = sequence[slot];
+        if (extruder_id >= 1 && extruder_id <= num_physical)
+            append(out_by_extruder[extruder_id - 1], ring_region);
+
+        remaining = diff_ex(remaining, ring_region, ApplySafetyOffset::Yes);
+    }
+
+    // Any remainder to fallback.
+    if (!remaining.empty() && sequence[0] >= 1 && sequence[0] <= num_physical)
+        append(out_by_extruder[sequence[0] - 1], std::move(remaining));
+    return true;
+}
+
+// ---------------------------------------------------------------------------
+// AdaptiveStripe: same as SameLayerAlternating but pitch scales with the
+// island's narrowest bounding-box dimension divided by 4.
+// ---------------------------------------------------------------------------
+static bool split_masks_adaptive_stripe(const ExPolygons               &source_masks,
+                                        const std::vector<unsigned int> &sequence,
+                                        size_t                           num_physical,
+                                        size_t                           layer_id,
+                                        coord_t                          base_pitch,
+                                        std::vector<ExPolygons>         &out_by_extruder)
+{
+    if (source_masks.empty() || sequence.empty() || num_physical == 0)
+        return false;
+
+    out_by_extruder.assign(num_physical, ExPolygons());
+    const size_t slot_count = sequence.size();
+    const size_t phase      = slot_count > 0 ? (layer_id % slot_count) : 0;
+
+    for (const ExPolygon &island : source_masks) {
+        const BoundingBox bb  = get_extents(island);
+        if (!bb.defined) continue;
+        const coord_t narrow  = std::min(bb.max.x() - bb.min.x(), bb.max.y() - bb.min.y());
+        const coord_t pitch   = std::max(base_pitch, narrow / 4);
+
+        // Split this island with its adaptive pitch.
+        std::vector<ExPolygons> tmp;
+        split_masks_pointillism_stripes(ExPolygons{island}, sequence, num_physical,
+                                        layer_id, pitch, false, tmp, /*fix_orientation=*/true);
+        for (size_t e = 0; e < num_physical; ++e)
+            if (e < tmp.size())
+                append(out_by_extruder[e], tmp[e]);
+    }
+    return true;
+}
+
 static size_t non_empty_mask_count(const std::vector<ExPolygons> &masks_by_extruder)
 {
     size_t count = 0;
@@ -1700,14 +2048,29 @@ static bool apply_pointillism_mixed_segmentation(PrintObject &print_object, std:
 
     std::vector<std::vector<unsigned int>> same_layer_sequences(mixed_rows.size());
     std::vector<bool>                      same_layer_row_active(mixed_rows.size(), false);
+    // true for SameLayerAlternating rows: fixed stripe orientation, phase shifts each layer.
+    std::vector<bool>                      same_layer_fix_orientation(mixed_rows.size(), false);
     std::vector<size_t>                    same_layer_row_indices;
     for (size_t mixed_idx = 0; mixed_idx < mixed_rows.size(); ++mixed_idx) {
         const MixedFilament &mf = mixed_rows[mixed_idx];
-        if (!mf.enabled || mf.distribution_mode != int(MixedFilament::SameLayerPointillisme))
+        if (!mf.enabled) continue;
+        const int mode = mf.distribution_mode;
+        const bool is_geometry_split =
+            mode == int(MixedFilament::SameLayerPointillisme) ||
+            mode == int(MixedFilament::SameLayerAlternating)  ||
+            mode == int(MixedFilament::TriColorStripe)        ||
+            mode == int(MixedFilament::DiagonalStripes)       ||
+            mode == int(MixedFilament::Checkerboard)          ||
+            mode == int(MixedFilament::CrossHatch)            ||
+            mode == int(MixedFilament::IslandCycling)         ||
+            mode == int(MixedFilament::ConcentricRings)       ||
+            mode == int(MixedFilament::AdaptiveStripe);
+        if (!is_geometry_split)
             continue;
         same_layer_sequences[mixed_idx] = pointillism_sequence_for_row(mf, num_physical);
         if (unique_extruder_count(same_layer_sequences[mixed_idx], num_physical) >= 2) {
-            same_layer_row_active[mixed_idx] = true;
+            same_layer_row_active[mixed_idx]      = true;
+            same_layer_fix_orientation[mixed_idx] = (mode == int(MixedFilament::SameLayerAlternating));
             same_layer_row_indices.emplace_back(mixed_idx);
         }
     }
@@ -1806,23 +2169,66 @@ static bool apply_pointillism_mixed_segmentation(PrintObject &print_object, std:
                     ++global_override_states;
             }
 
-            std::vector<ExPolygons> split_by_extruder;
-            if (!split_masks_pointillism_stripes(state_masks, *sequence_ptr, num_physical, layer_id, stripe_pitch, false, split_by_extruder)) {
-                ++skipped_states;
-                continue;
-            }
-            size_t split_unique = non_empty_mask_count(split_by_extruder);
-            if (split_unique < 2) {
-                std::vector<ExPolygons> retry_split;
-                if (split_masks_pointillism_stripes(state_masks, *sequence_ptr, num_physical, layer_id, stripe_pitch, true, retry_split)) {
-                    const size_t retry_unique = non_empty_mask_count(retry_split);
-                    if (retry_unique > split_unique) {
-                        split_by_extruder = std::move(retry_split);
-                        split_unique = retry_unique;
+            // Determine whether this row uses fixed stripe orientation (SameLayerAlternating).
+            bool fix_orient = same_layer_fix_orientation[size_t(mixed_idx)];
+            if (!same_layer_row_active[size_t(mixed_idx)]) {
+                // Row is overridden by another active row; inherit its orientation flag.
+                for (size_t idx : same_layer_row_indices) {
+                    if (&same_layer_sequences[idx] == sequence_ptr) {
+                        fix_orient = same_layer_fix_orientation[idx];
+                        break;
                     }
-                    ++retried_states;
                 }
             }
+
+            // Mode-aware split dispatch.
+            const int row_mode = mf.distribution_mode;
+            std::vector<ExPolygons> split_by_extruder;
+            bool split_ok = false;
+
+            if (row_mode == int(MixedFilament::Checkerboard)) {
+                split_ok = split_masks_checkerboard(state_masks, *sequence_ptr, num_physical,
+                                                    layer_id, stripe_pitch, split_by_extruder);
+            } else if (row_mode == int(MixedFilament::DiagonalStripes)) {
+                split_ok = split_masks_diagonal_stripes(state_masks, *sequence_ptr, num_physical,
+                                                        layer_id, stripe_pitch,
+                                                        mf.stripe_angle_deg, split_by_extruder);
+            } else if (row_mode == int(MixedFilament::CrossHatch)) {
+                split_ok = split_masks_crosshatch(state_masks, *sequence_ptr, num_physical,
+                                                  layer_id, stripe_pitch,
+                                                  mf.stripe_angle_deg, split_by_extruder);
+            } else if (row_mode == int(MixedFilament::IslandCycling)) {
+                split_ok = split_masks_island_cycling(state_masks, *sequence_ptr, num_physical,
+                                                      layer_id, split_by_extruder);
+            } else if (row_mode == int(MixedFilament::ConcentricRings)) {
+                const coord_t ring_pitch = std::max<coord_t>(scale_(0.5),
+                    scale_(double(mf.ring_pitch_mm)));
+                split_ok = split_masks_concentric_rings(state_masks, *sequence_ptr, num_physical,
+                                                        layer_id, ring_pitch, split_by_extruder);
+            } else if (row_mode == int(MixedFilament::AdaptiveStripe)) {
+                split_ok = split_masks_adaptive_stripe(state_masks, *sequence_ptr, num_physical,
+                                                       layer_id, stripe_pitch, split_by_extruder);
+            } else {
+                // SameLayerPointillisme, SameLayerAlternating, TriColorStripe
+                split_ok = split_masks_pointillism_stripes(state_masks, *sequence_ptr, num_physical,
+                                                           layer_id, stripe_pitch, false,
+                                                           split_by_extruder, fix_orient);
+                if (split_ok && non_empty_mask_count(split_by_extruder) < 2) {
+                    std::vector<ExPolygons> retry_split;
+                    if (split_masks_pointillism_stripes(state_masks, *sequence_ptr, num_physical,
+                                                        layer_id, stripe_pitch, true,
+                                                        retry_split, fix_orient)) {
+                        const size_t retry_unique = non_empty_mask_count(retry_split);
+                        if (retry_unique > non_empty_mask_count(split_by_extruder)) {
+                            split_by_extruder = std::move(retry_split);
+                        }
+                        ++retried_states;
+                    }
+                }
+            }
+
+            if (!split_ok) { ++skipped_states; continue; }
+            size_t split_unique = non_empty_mask_count(split_by_extruder);
             if (split_unique < 2)
                 ++weak_split_states;
 

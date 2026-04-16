@@ -3017,6 +3017,9 @@ private:
     wxChoice                       *m_choice_b = nullptr;
     wxChoice                       *m_choice_c = nullptr;
     wxChoice                       *m_choice_d = nullptr;
+    wxChoice                       *m_mode_choice = nullptr;
+    wxStaticText                   *m_mode_param_label = nullptr;
+    wxSpinCtrlDouble               *m_mode_param_ctrl  = nullptr;
     wxPanel                        *m_picker_a_container = nullptr;
     wxPanel                        *m_picker_b_container = nullptr;
     wxPanel                        *m_picker_a_swatch = nullptr;
@@ -3397,8 +3400,9 @@ void MixedFilamentConfigPanel::build_ui()
     const int component_a = std::clamp(int(m_mf.component_a), 1, int(m_num_physical));
     const int component_b = std::clamp(int(m_mf.component_b), 1, int(m_num_physical));
 
-    const int row_distribution_mode = int(MixedFilament::Simple);
-    m_mf.distribution_mode = row_distribution_mode;
+    // Preserve the distribution mode that was loaded from the project file,
+    // defaulting to Simple for brand-new rows.
+    const int row_distribution_mode = m_mf.distribution_mode;
 
     // Hidden data controls used as backing state for swatch pickers.
     m_choice_a = new wxChoice(this, wxID_ANY, wxDefaultPosition, wxDefaultSize, filament_choices);
@@ -3441,6 +3445,130 @@ void MixedFilamentConfigPanel::build_ui()
     create_component_picker(m_picker_a_container, m_picker_a_swatch, m_picker_a_label, _L("Click to choose a physical filament color"));
     create_component_picker(m_picker_b_container, m_picker_b_swatch, m_picker_b_label, _L("Click to choose a physical filament color"));
     update_component_picker_visuals();
+
+    // Distribution mode selector
+    {
+        auto *mode_row = new wxBoxSizer(wxHORIZONTAL);
+        auto *mode_label = new wxStaticText(this, wxID_ANY, _L("Mode"));
+        mode_label->SetForegroundColour(is_dark ? wxColour(236, 236, 236) : wxColour(20, 20, 20));
+        mode_row->Add(mode_label, 0, wxALIGN_CENTER_VERTICAL | wxRIGHT, gap);
+
+        wxArrayString mode_choices;
+        mode_choices.Add(_L("Simple"));                     // 0  → Simple
+        mode_choices.Add(_L("Layer cycle"));                // 1  → LayerCycle
+        mode_choices.Add(_L("Same-layer stripes"));         // 2  → SameLayerPointillisme
+        mode_choices.Add(_L("Same-layer alternating"));     // 3  → SameLayerAlternating
+        mode_choices.Add(_L("Wall alternating"));           // 4  → WallAlternating
+        mode_choices.Add(_L("Spiral / helical"));           // 5  → SpiralPhase
+        mode_choices.Add(_L("3-color stripe"));             // 6  → TriColorStripe
+        mode_choices.Add(_L("Diagonal stripes"));           // 7  → DiagonalStripes
+        mode_choices.Add(_L("Checkerboard"));               // 8  → Checkerboard
+        mode_choices.Add(_L("Cross-hatch / diamond"));      // 9  → CrossHatch
+        mode_choices.Add(_L("Perimeter depth gradient"));   // 10 → PerimeterDepthGradient
+        mode_choices.Add(_L("Surface role"));               // 11 → SurfaceRoleBased
+        mode_choices.Add(_L("Island cycling"));             // 12 → IslandCycling
+        mode_choices.Add(_L("Concentric rings"));           // 13 → ConcentricRings
+        mode_choices.Add(_L("Adaptive stripe"));            // 14 → AdaptiveStripe
+
+        m_mode_choice = new wxChoice(this, wxID_ANY, wxDefaultPosition, wxDefaultSize, mode_choices);
+        auto mode_to_index = [](int mode) -> int {
+            switch (mode) {
+                case int(MixedFilament::LayerCycle):             return 1;
+                case int(MixedFilament::SameLayerPointillisme):  return 2;
+                case int(MixedFilament::SameLayerAlternating):   return 3;
+                case int(MixedFilament::WallAlternating):        return 4;
+                case int(MixedFilament::SpiralPhase):            return 5;
+                case int(MixedFilament::TriColorStripe):         return 6;
+                case int(MixedFilament::DiagonalStripes):        return 7;
+                case int(MixedFilament::Checkerboard):           return 8;
+                case int(MixedFilament::CrossHatch):             return 9;
+                case int(MixedFilament::PerimeterDepthGradient): return 10;
+                case int(MixedFilament::SurfaceRoleBased):       return 11;
+                case int(MixedFilament::IslandCycling):          return 12;
+                case int(MixedFilament::ConcentricRings):        return 13;
+                case int(MixedFilament::AdaptiveStripe):         return 14;
+                default:                                          return 0; // Simple
+            }
+        };
+        m_mode_choice->SetSelection(mode_to_index(row_distribution_mode));
+        m_mode_choice->SetToolTip(_L(
+            "Simple: basic layer-by-layer alternation.\n"
+            "Layer cycle: repeating A/B cadence across layers.\n"
+            "Same-layer stripes: splits each layer into parallel stripes (orientation alternates each layer).\n"
+            "Same-layer alternating: fixed-orientation stripes; starting filament shifts each layer.\n"
+            "Wall alternating: outer/inner wall swap filaments each layer (exploits light transmission).\n"
+            "Spiral / helical: stripe phase advances with Z height, producing a helical colour band.\n"
+            "3-color stripe: three filaments A/B/C phase-shifted by 1/3 each layer.\n"
+            "Diagonal stripes: stripes at a configurable angle (use the Angle parameter).\n"
+            "Checkerboard: 2D grid of cells offset by one cell each layer.\n"
+            "Cross-hatch / diamond: two overlapping diagonal stripe grids.\n"
+            "Perimeter depth gradient: blend ratio increases with each inner shell.\n"
+            "Surface role: outer walls use component B, infill/skin use component A.\n"
+            "Island cycling: each disconnected polygon island gets a different filament.\n"
+            "Concentric rings: rings from the centroid alternate colours at ring-pitch intervals.\n"
+            "Adaptive stripe: stripe width scales with local wall thickness."));
+        mode_row->Add(m_mode_choice, 1, wxALIGN_CENTER_VERTICAL);
+        root->Add(mode_row, 0, wxEXPAND | wxLEFT | wxRIGHT | wxTOP, gap);
+
+        // Mode-specific parameter row: single SpinCtrlDouble relabeled per mode.
+        // Visible only for modes that have a numeric parameter.
+        auto *param_row = new wxBoxSizer(wxHORIZONTAL);
+        m_mode_param_label = new wxStaticText(this, wxID_ANY, wxEmptyString);
+        m_mode_param_label->SetForegroundColour(is_dark ? wxColour(236, 236, 236) : wxColour(20, 20, 20));
+        param_row->Add(m_mode_param_label, 0, wxALIGN_CENTER_VERTICAL | wxRIGHT, gap);
+        m_mode_param_ctrl = new wxSpinCtrlDouble(this, wxID_ANY, wxEmptyString,
+                                                 wxDefaultPosition, wxSize(FromDIP(80), -1),
+                                                 wxSP_ARROW_KEYS, 0.0, 360.0, 45.0, 1.0);
+        param_row->Add(m_mode_param_ctrl, 0, wxALIGN_CENTER_VERTICAL);
+        root->Add(param_row, 0, wxEXPAND | wxLEFT | wxRIGHT | wxTOP, gap);
+
+        // Helper: configure the param spinner for the given mode.
+        auto configure_param_ctrl = [this](int mode) {
+            if (!m_mode_param_ctrl || !m_mode_param_label) return;
+            const bool is_dark_local = wxGetApp().dark_mode();
+            const wxColour fg = is_dark_local ? wxColour(236, 236, 236) : wxColour(20, 20, 20);
+            m_mode_param_label->SetForegroundColour(fg);
+            switch (mode) {
+                case int(MixedFilament::DiagonalStripes):
+                case int(MixedFilament::CrossHatch):
+                    m_mode_param_label->SetLabel(_L("Angle (°)"));
+                    m_mode_param_ctrl->SetRange(0.0, 90.0);
+                    m_mode_param_ctrl->SetIncrement(5.0);
+                    m_mode_param_ctrl->SetValue(double(m_mf.stripe_angle_deg));
+                    m_mode_param_ctrl->SetToolTip(_L("Stripe angle in degrees (0 = axis-aligned, 45 = diagonal)."));
+                    m_mode_param_label->Show(); m_mode_param_ctrl->Show();
+                    break;
+                case int(MixedFilament::SpiralPhase):
+                    m_mode_param_label->SetLabel(_L("Phase/mm"));
+                    m_mode_param_ctrl->SetRange(0.01, 10.0);
+                    m_mode_param_ctrl->SetIncrement(0.1);
+                    m_mode_param_ctrl->SetValue(double(m_mf.spiral_phase_per_mm));
+                    m_mode_param_ctrl->SetToolTip(_L("Slot positions advanced per mm of Z height.  Higher = tighter helix."));
+                    m_mode_param_label->Show(); m_mode_param_ctrl->Show();
+                    break;
+                case int(MixedFilament::ConcentricRings):
+                    m_mode_param_label->SetLabel(_L("Ring pitch (mm)"));
+                    m_mode_param_ctrl->SetRange(0.1, 50.0);
+                    m_mode_param_ctrl->SetIncrement(0.5);
+                    m_mode_param_ctrl->SetValue(double(m_mf.ring_pitch_mm));
+                    m_mode_param_ctrl->SetToolTip(_L("Radial width of each colour band in mm."));
+                    m_mode_param_label->Show(); m_mode_param_ctrl->Show();
+                    break;
+                case int(MixedFilament::PerimeterDepthGradient):
+                    m_mode_param_label->SetLabel(_L("Depth step (%)"));
+                    m_mode_param_ctrl->SetRange(0.0, 100.0);
+                    m_mode_param_ctrl->SetIncrement(5.0);
+                    m_mode_param_ctrl->SetValue(double(m_mf.depth_step_pct));
+                    m_mode_param_ctrl->SetToolTip(_L("Additional blend-B % per successive inner shell."));
+                    m_mode_param_label->Show(); m_mode_param_ctrl->Show();
+                    break;
+                default:
+                    m_mode_param_label->Hide(); m_mode_param_ctrl->Hide();
+                    break;
+            }
+        };
+        configure_param_ctrl(row_distribution_mode);
+    }
 
     // Check for pattern mode
     const std::string normalized_pattern = MixedFilamentManager::normalize_manual_pattern(m_mf.manual_pattern);
@@ -3570,10 +3698,56 @@ void MixedFilamentConfigPanel::build_ui()
 
         m_mf.component_a = unsigned(a);
         m_mf.component_b = unsigned(b);
-        m_mf.distribution_mode = int(MixedFilament::Simple);
+
+        // Read distribution mode from the dropdown selector.
+        if (m_mode_choice) {
+            static const int index_to_mode[] = {
+                int(MixedFilament::Simple),                  //  0
+                int(MixedFilament::LayerCycle),              //  1
+                int(MixedFilament::SameLayerPointillisme),   //  2
+                int(MixedFilament::SameLayerAlternating),    //  3
+                int(MixedFilament::WallAlternating),         //  4
+                int(MixedFilament::SpiralPhase),             //  5
+                int(MixedFilament::TriColorStripe),          //  6
+                int(MixedFilament::DiagonalStripes),         //  7
+                int(MixedFilament::Checkerboard),            //  8
+                int(MixedFilament::CrossHatch),              //  9
+                int(MixedFilament::PerimeterDepthGradient),  // 10
+                int(MixedFilament::SurfaceRoleBased),        // 11
+                int(MixedFilament::IslandCycling),           // 12
+                int(MixedFilament::ConcentricRings),         // 13
+                int(MixedFilament::AdaptiveStripe),          // 14
+            };
+            const int sel = m_mode_choice->GetSelection();
+            m_mf.distribution_mode = (sel >= 0 && sel < int(std::size(index_to_mode)))
+                                    ? index_to_mode[sel]
+                                    : int(MixedFilament::Simple);
+        }
+
+        // Write back mode-specific parameter spinner value.
+        if (m_mode_param_ctrl && m_mode_param_ctrl->IsShown()) {
+            const double v = m_mode_param_ctrl->GetValue();
+            switch (m_mf.distribution_mode) {
+                case int(MixedFilament::DiagonalStripes):
+                case int(MixedFilament::CrossHatch):
+                    m_mf.stripe_angle_deg = float(std::clamp(v, 0.0, 90.0));
+                    break;
+                case int(MixedFilament::SpiralPhase):
+                    m_mf.spiral_phase_per_mm = float(std::max(0.01, v));
+                    break;
+                case int(MixedFilament::ConcentricRings):
+                    m_mf.ring_pitch_mm = float(std::max(0.1, v));
+                    break;
+                case int(MixedFilament::PerimeterDepthGradient):
+                    m_mf.depth_step_pct = int(std::clamp(v, 0.0, 100.0));
+                    break;
+                default: break;
+            }
+        }
 
         const bool simple_mode = m_mf.distribution_mode == int(MixedFilament::Simple);
-        const bool same_layer_mode = m_mf.distribution_mode == int(MixedFilament::SameLayerPointillisme);
+        const bool same_layer_mode = m_mf.distribution_mode == int(MixedFilament::SameLayerPointillisme)
+                                  || m_mf.distribution_mode == int(MixedFilament::SameLayerAlternating);
         std::vector<unsigned int> preview_sequence;
 
         if (m_pattern_ctrl) {
@@ -3745,6 +3919,10 @@ void MixedFilamentConfigPanel::build_ui()
         m_choice_c->Bind(wxEVT_CHOICE, [apply_changes](wxCommandEvent&) { apply_changes(); });
     if (m_choice_d)
         m_choice_d->Bind(wxEVT_CHOICE, [apply_changes](wxCommandEvent&) { apply_changes(); });
+    if (m_mode_choice)
+        m_mode_choice->Bind(wxEVT_CHOICE, [apply_changes](wxCommandEvent&) { apply_changes(); });
+    if (m_mode_param_ctrl)
+        m_mode_param_ctrl->Bind(wxEVT_SPINCTRLDOUBLE, [apply_changes](wxSpinDoubleEvent&) { apply_changes(); });
     if (m_blend_selector)
         m_blend_selector->Bind(wxEVT_SLIDER, [apply_changes](wxCommandEvent&) { apply_changes(); });
 
@@ -3856,7 +4034,8 @@ void MixedFilamentConfigPanel::update_component_picker_visuals()
 void MixedFilamentConfigPanel::update_preview()
 {
     const bool simple_mode = m_mf.distribution_mode == int(MixedFilament::Simple);
-    const bool same_layer_mode = m_mf.distribution_mode == int(MixedFilament::SameLayerPointillisme);
+    const bool same_layer_mode = m_mf.distribution_mode == int(MixedFilament::SameLayerPointillisme)
+                              || m_mf.distribution_mode == int(MixedFilament::SameLayerAlternating);
     const std::string normalized_pattern = MixedFilamentManager::normalize_manual_pattern(m_mf.manual_pattern);
     const bool pattern_row_mode = !normalized_pattern.empty();
 

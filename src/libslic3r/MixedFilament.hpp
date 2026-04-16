@@ -18,9 +18,37 @@ namespace Slic3r {
 struct MixedFilament
 {
     enum DistributionMode : uint8_t {
-        LayerCycle = 0,
+        LayerCycle            = 0,
         SameLayerPointillisme = 1,
-        Simple = 2
+        Simple                = 2,
+        // Fixed-orientation stripes; starting filament offsets each layer →
+        // A,B,A,B.../B,A,B,A... alternation.
+        SameLayerAlternating  = 3,
+        // Outer wall and next inner wall carry opposite filaments, swapping
+        // every layer to exploit light transmission.
+        WallAlternating       = 4,
+        // Stripe phase advances continuously with Z height → helical colour
+        // band visible from the side of tall objects.
+        SpiralPhase           = 5,
+        // Three-filament A/B/C phase-shifted by 1/3 each layer.
+        TriColorStripe        = 6,
+        // Stripes at a configurable angle (default 45°).
+        DiagonalStripes       = 7,
+        // 2D checkerboard grid; offset by one cell each layer.
+        Checkerboard          = 8,
+        // Two overlapping ±angle grids produce a diamond-lattice pattern.
+        CrossHatch            = 9,
+        // Blend ratio toward component_b increases with each inner shell.
+        PerimeterDepthGradient = 10,
+        // Filament selected by extrusion role (skin vs infill vs wall).
+        SurfaceRoleBased      = 11,
+        // Disconnected polygon islands cycle filaments by index + layer.
+        IslandCycling         = 12,
+        // Concentric rings from centroid alternate colours at ring_pitch_mm.
+        ConcentricRings       = 13,
+        // Stripe width scales with local wall thickness (narrower on thin
+        // features to avoid non-printable slivers).
+        AdaptiveStripe        = 14,
     };
 
     // 1-based physical filament IDs that are combined.
@@ -60,6 +88,19 @@ struct MixedFilament
     // - SameLayerPointillisme: split painted masks in XY on each layer.
     int distribution_mode = int(Simple);
 
+    // DiagonalStripes / CrossHatch: angle in degrees from vertical (0 = axis-
+    // aligned, 45 = diagonal).  Stored as a float; clamped to [0, 90].
+    float stripe_angle_deg    = 45.f;
+    // SpiralPhase: how many slot-positions the phase advances per mm of Z
+    // height.  Higher = tighter helix.
+    float spiral_phase_per_mm = 0.5f;
+    // ConcentricRings: radial width of each colour band in mm.
+    float ring_pitch_mm       = 2.0f;
+    // PerimeterDepthGradient: additional blend-B percentage added per
+    // successive inner shell.  Outer wall uses mix_b_percent; each inner
+    // shell increases by depth_step_pct toward 100%.
+    int   depth_step_pct      = 25;
+
     // Whether this mixed filament is enabled (available for assignment).
     bool enabled = true;
 
@@ -93,6 +134,10 @@ struct MixedFilament
                gradient_component_weights == rhs.gradient_component_weights &&
                pointillism_all_filaments == rhs.pointillism_all_filaments &&
                distribution_mode == rhs.distribution_mode &&
+               stripe_angle_deg    == rhs.stripe_angle_deg    &&
+               spiral_phase_per_mm == rhs.spiral_phase_per_mm &&
+               ring_pitch_mm       == rhs.ring_pitch_mm       &&
+               depth_step_pct      == rhs.depth_step_pct      &&
                enabled      == rhs.enabled &&
                deleted      == rhs.deleted &&
                custom       == rhs.custom &&
@@ -182,6 +227,13 @@ public:
                                                           float        layer_print_z = 0.f,
                                                           float        layer_height  = 0.f,
                                                           bool         force_height_weighted = false) const;
+
+    // Resolve a mixed filament ID to a physical extruder based on extrusion
+    // role.  Used by SurfaceRoleBased mode.  Returns filament_id unchanged
+    // when it is not a SurfaceRoleBased mixed filament.
+    unsigned int resolve_by_role(unsigned int filament_id,
+                                 size_t       num_physical,
+                                 int          extrusion_role) const;
 
     // Map virtual filament ID (1-based, after physical IDs) to index into
     // m_mixed. Virtual IDs enumerate enabled mixed rows only.

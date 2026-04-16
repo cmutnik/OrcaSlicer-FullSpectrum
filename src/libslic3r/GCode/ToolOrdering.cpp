@@ -69,6 +69,12 @@ bool has_grouped_manual_pattern(const MixedFilamentManager *mixed_mgr,
     const MixedFilament *mixed_row = mixed_mgr->mixed_filament_from_id(filament_id_1based, num_physical);
     if (mixed_row == nullptr)
         return false;
+    // WallAlternating synthesises its own per-perimeter pattern without needing
+    // a manual_pattern string — treat it like a grouped pattern so the tool
+    // ordering system calls ordered_perimeter_extruders() and sets
+    // preserve_extruder_order for correct outer/inner wall assignment.
+    if (mixed_row->distribution_mode == int(MixedFilament::WallAlternating))
+        return true;
     const std::string normalized = MixedFilamentManager::normalize_manual_pattern(mixed_row->manual_pattern);
     return normalized.find(',') != std::string::npos;
 }
