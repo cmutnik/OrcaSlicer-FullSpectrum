@@ -489,7 +489,30 @@ static bool parse_row_definition(const std::string &row,
         if (tok[0] == 'm' || tok[0] == 'M') {
             int parsed_mode = distribution_mode;
             if (parse_int_token(tok.substr(1), parsed_mode))
-                distribution_mode = clamp_int(parsed_mode, int(MixedFilament::LayerCycle), int(MixedFilament::WallAlternating));
+                distribution_mode = clamp_int(parsed_mode, int(MixedFilament::LayerCycle), int(MixedFilament::AdaptiveStripe));
+            continue;
+        }
+        // New mode-parameter tokens (float/int): A=stripe_angle_deg,
+        // P=spiral_phase_per_mm, R=ring_pitch_mm, E=depth_step_pct.
+        if (tok[0] == 'A' || tok[0] == 'a') {
+            const std::string t = trim_copy(tok.substr(1));
+            if (!t.empty()) { try { stripe_angle_deg = std::clamp(std::stof(t), 0.f, 90.f); } catch (...) {} }
+            continue;
+        }
+        if (tok[0] == 'P' || tok[0] == 'p') {
+            const std::string t = trim_copy(tok.substr(1));
+            if (!t.empty()) { try { spiral_phase_per_mm = std::max(0.f, std::stof(t)); } catch (...) {} }
+            continue;
+        }
+        if (tok[0] == 'R' || tok[0] == 'r') {
+            const std::string t = trim_copy(tok.substr(1));
+            if (!t.empty()) { try { ring_pitch_mm = std::max(0.1f, std::stof(t)); } catch (...) {} }
+            continue;
+        }
+        if (tok[0] == 'E' || tok[0] == 'e') {
+            int parsed_e = depth_step_pct;
+            if (parse_int_token(tok.substr(1), parsed_e))
+                depth_step_pct = std::clamp(parsed_e, 0, 100);
             continue;
         }
         if (tok[0] == 'd' || tok[0] == 'D') {
@@ -1035,7 +1058,11 @@ std::string MixedFilamentManager::serialize_custom_entries()
            << (mf.pointillism_all_filaments ? 1 : 0) << ','
            << 'g' << normalized_ids << ','
            << 'w' << normalized_weights << ','
-           << 'm' << clamp_int(mf.distribution_mode, int(MixedFilament::LayerCycle), int(MixedFilament::WallAlternating)) << ','
+           << 'm' << clamp_int(mf.distribution_mode, int(MixedFilament::LayerCycle), int(MixedFilament::AdaptiveStripe)) << ','
+           << 'A' << mf.stripe_angle_deg << ','
+           << 'P' << mf.spiral_phase_per_mm << ','
+           << 'R' << mf.ring_pitch_mm << ','
+           << 'E' << mf.depth_step_pct << ','
            << 'd' << (mf.deleted ? 1 : 0) << ','
            << 'o' << (mf.origin_auto ? 1 : 0) << ','
            << 'u' << mf.stable_id;
@@ -1257,8 +1284,32 @@ unsigned int MixedFilamentManager::resolve(unsigned int filament_id,
         return mf.component_a;
     }
 
+    // SpiralPhase: phase advances with Z height instead of layer index.
+    if (mf.distribution_mode == int(MixedFilament::SpiralPhase)) {
+        const int cycle = mf.ratio_a + mf.ratio_b;
+        if (cycle > 0) {
+            const float raw_phase = std::max(0.f, layer_print_z) * mf.spiral_phase_per_mm;
+            const float cycle_f   = float(cycle);
+            const float phase_f   = std::fmod(raw_phase, cycle_f);
+            const int   pos       = int(phase_f < 0.f ? phase_f + cycle_f : phase_f);
+            return (pos < mf.ratio_a) ? mf.component_a : mf.component_b;
+        }
+        return mf.component_a;
+    }
+
+    // TriColorStripe: three gradient components with equal weight, phase-
+    // shifted by 1/3 each layer.  Resolved from the gradient sequence with
+    // the layer index advanced by the stripe resolution below.
     const bool use_simple_mode = mf.distribution_mode == int(MixedFilament::Simple);
     const std::vector<unsigned int> gradient_ids = decode_gradient_component_ids(mf.gradient_component_ids, num_physical);
+
+    if (mf.distribution_mode == int(MixedFilament::TriColorStripe) && gradient_ids.size() >= 3) {
+        // Build equal-weight sequence for up to 3 components; phase shifts by 1 per layer.
+        const std::vector<unsigned int> tri_seq(gradient_ids.begin(), gradient_ids.begin() + std::min(gradient_ids.size(), size_t(3)));
+        const size_t pos = size_t(safe_mod(layer_index, int(tri_seq.size())));
+        return tri_seq[pos];
+    }
+
     if (!use_simple_mode && gradient_ids.size() >= 3) {
         const std::vector<int> gradient_weights =
             decode_gradient_component_weights(mf.gradient_component_weights, gradient_ids.size());
@@ -1320,6 +1371,18 @@ unsigned int MixedFilamentManager::resolve_perimeter(unsigned int filament_id,
         const bool outer    = (perimeter_index <= 0);
         const bool use_a    = outer ? (layer_pos == 0) : (layer_pos != 0);
         return use_a ? mf.component_a : mf.component_b;
+    }
+
+    if (mf.distribution_mode == int(MixedFilament::PerimeterDepthGradient)) {
+        // Blend ratio toward component_b increases with each inner shell.
+        // Outer wall uses mf.mix_b_percent; each successive shell adds
+        // depth_step_pct, clamped to [0, 100].
+        const int depth = std::max(0, perimeter_index);
+        const int blend_b = std::clamp(mf.mix_b_percent + depth * mf.depth_step_pct, 0, 100);
+        // Deterministic A/B decision from the per-layer position within a
+        // 100-step cycle so the boundary shifts with layer index.
+        const int pos = safe_mod(layer_index, 100);
+        return (pos < (100 - blend_b)) ? mf.component_a : mf.component_b;
     }
 
     if (!mf.manual_pattern.empty()) {
@@ -1392,6 +1455,28 @@ std::vector<unsigned int> MixedFilamentManager::ordered_perimeter_extruders(unsi
 
     ordered.emplace_back(resolve(filament_id, num_physical, layer_index, layer_print_z, layer_height, force_height_weighted));
     return ordered;
+}
+
+unsigned int MixedFilamentManager::resolve_by_role(unsigned int filament_id,
+                                                   size_t       num_physical,
+                                                   int          extrusion_role) const
+{
+    const int mixed_idx = mixed_index_from_filament_id(filament_id, num_physical);
+    if (mixed_idx < 0)
+        return filament_id;
+
+    const MixedFilament &mf = m_mixed[size_t(mixed_idx)];
+    if (mf.distribution_mode != int(MixedFilament::SurfaceRoleBased))
+        return filament_id;
+
+    // ExtrusionRole enum values (mirrored here to avoid a header dependency):
+    //   erPerimeter=1, erExternalPerimeter=2, erInternalInfill=4,
+    //   erSolidInfill=5, erTopSolidInfill=6, erBottomSurface=7,
+    //   erSupportMaterial=9
+    const bool is_wall = (extrusion_role == 1  // erPerimeter
+                       || extrusion_role == 2   // erExternalPerimeter
+                       || extrusion_role == 3); // erOverhangPerimeter
+    return is_wall ? mf.component_b : mf.component_a;
 }
 
 int MixedFilamentManager::mixed_index_from_filament_id(unsigned int filament_id, size_t num_physical) const

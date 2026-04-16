@@ -3796,7 +3796,21 @@ static size_t unique_extruder_count_for_gcode(const std::vector<unsigned int>& s
 
 static std::vector<unsigned int> pointillism_sequence_for_row_for_gcode(const MixedFilament& mf, size_t num_physical)
 {
-    if (!mf.enabled || num_physical == 0 || mf.distribution_mode != int(MixedFilament::SameLayerPointillisme))
+    if (!mf.enabled || num_physical == 0)
+        return {};
+    // Accept all geometry-split modes that require a stripe sequence.
+    const int mode = mf.distribution_mode;
+    const bool is_geometry_split =
+        mode == int(MixedFilament::SameLayerPointillisme) ||
+        mode == int(MixedFilament::SameLayerAlternating)  ||
+        mode == int(MixedFilament::TriColorStripe)        ||
+        mode == int(MixedFilament::DiagonalStripes)       ||
+        mode == int(MixedFilament::Checkerboard)          ||
+        mode == int(MixedFilament::CrossHatch)            ||
+        mode == int(MixedFilament::IslandCycling)         ||
+        mode == int(MixedFilament::ConcentricRings)       ||
+        mode == int(MixedFilament::AdaptiveStripe);
+    if (!is_geometry_split)
         return {};
 
     if (!mf.manual_pattern.empty())
@@ -4034,8 +4048,13 @@ static bool split_extrusion_collection_for_multi_perimeter_pattern(
         if (perimeter_index < 0)
             perimeter_index = entity->role() == erExternalPerimeter ? 0 : 1;
 
-        const unsigned int extruder_id = mixed_mgr.resolve_perimeter(
-            mixed_filament_id, num_physical, layer_index, perimeter_index);
+        // SurfaceRoleBased selects filament by extrusion role (wall vs infill
+        // vs skin) rather than by perimeter depth.
+        const MixedFilament *mf_ptr = mixed_mgr.mixed_filament_from_id(mixed_filament_id, num_physical);
+        const bool is_role_based = mf_ptr && mf_ptr->distribution_mode == int(MixedFilament::SurfaceRoleBased);
+        const unsigned int extruder_id = is_role_based
+            ? mixed_mgr.resolve_by_role(mixed_filament_id, num_physical, int(entity->role()))
+            : mixed_mgr.resolve_perimeter(mixed_filament_id, num_physical, layer_index, perimeter_index);
         if (extruder_id == 0 || extruder_id > num_physical)
             continue;
 
@@ -4809,6 +4828,11 @@ LayerResult GCode::process_layer(const Print& print,
             const MixedFilament* mixed_row = layer_tools.mixed_mgr->mixed_filament_from_id(filament_id_1based, layer_tools.num_physical);
             if (mixed_row == nullptr)
                 return false;
+            // WallAlternating and PerimeterDepthGradient use per-perimeter
+            // resolution without a manual_pattern string.
+            if (mixed_row->distribution_mode == int(MixedFilament::WallAlternating) ||
+                mixed_row->distribution_mode == int(MixedFilament::PerimeterDepthGradient))
+                return true;
             const std::string normalized_pattern = MixedFilamentManager::normalize_manual_pattern(mixed_row->manual_pattern);
             return normalized_pattern.find(',') != std::string::npos;
         };

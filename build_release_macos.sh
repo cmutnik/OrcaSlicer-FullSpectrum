@@ -184,7 +184,8 @@ function build_slicer() {
                     -DCMAKE_INSTALL_RPATH="${DEPS}/usr/local" \
                     -DCMAKE_MACOSX_BUNDLE=ON \
                     -DCMAKE_OSX_ARCHITECTURES="${_ARCH}" \
-                    -DCMAKE_OSX_DEPLOYMENT_TARGET="${OSX_DEPLOYMENT_TARGET}"
+                    -DCMAKE_OSX_DEPLOYMENT_TARGET="${OSX_DEPLOYMENT_TARGET}" \
+                    -DCMAKE_POLICY_VERSION_MINIMUM=3.5
             fi
             cmake --build . --config "$BUILD_CONFIG" --target "$SLICER_BUILD_TARGET"
             # Explicitly build profile_validator if ORCA_TOOLS is enabled
