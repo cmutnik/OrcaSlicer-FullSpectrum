@@ -1527,6 +1527,7 @@ void Layer::make_ironing()
 			const PrintRegionConfig &config = layerm->region().config();
 			if (config.ironing_type != IroningType::NoIroning &&
 			    (config.ironing_type == IroningType::AllSolid ||
+			     config.ironing_type == IroningType::SlopeSurfaces ||
 				    ((config.top_shell_layers > 0 || (this->object()->print()->config().spiral_mode && config.bottom_shell_layers > 1)) &&
 					    (config.ironing_type == IroningType::TopSurfaces ||
 					        (config.ironing_type == IroningType::TopmostOnly && layerm->layer()->upper_layer == nullptr))))) {
@@ -1542,7 +1543,9 @@ void Layer::make_ironing()
 				//TODO just_infill is currently not used.
 				ironing_params.just_infill 	= false;
 				ironing_params.line_spacing = config.ironing_spacing;
-                ironing_params.inset 		= config.ironing_inset;
+				// Slope surface ironing irons right to the perimeter edge so the narrow bands
+				// are fully covered; ignore the inset config for this mode.
+                ironing_params.inset 		= (config.ironing_type == IroningType::SlopeSurfaces) ? -1.0 : config.ironing_inset;
 				ironing_params.height 		= default_layer_height * 0.01 * config.ironing_flow;
 				ironing_params.speed 		= config.ironing_speed;
                 ironing_params.angle        = (config.ironing_angle >= 0 ? config.ironing_angle : config.infill_direction) * M_PI / 180.;
@@ -1593,6 +1596,7 @@ void Layer::make_ironing()
 			for (size_t k = i; k < j; ++ k) {
 				const IroningParams		 &ironing_params  = by_extruder[k];
 				const PrintRegionConfig  &region_config   = ironing_params.layerm->region().config();
+				bool					  iron_slopes     = region_config.ironing_type == IroningType::SlopeSurfaces;
 				bool					  iron_everything = region_config.ironing_type == IroningType::AllSolid;
 				bool					  iron_completely = iron_everything;
 				if (iron_everything) {
@@ -1609,6 +1613,12 @@ void Layer::make_ironing()
 					// Iron everything. This is likely only good for solid transparent objects.
 					for (const Surface &surface : ironing_params.layerm->slices.surfaces)
 						polygons_append(polys, surface.expolygon);
+				} else if (iron_slopes) {
+					// Slope surface ironing: collect all stTop surfaces; narrow bands will be
+					// identified as slope steps and ironed with a contour-aligned fill angle.
+					for (const Surface &surface : ironing_params.layerm->slices.surfaces)
+						if (surface.surface_type == stTop)
+							polygons_append(polys, surface.expolygon);
 				} else {
 					for (const Surface &surface : ironing_params.layerm->slices.surfaces)
 						if ((surface.surface_type == stTop && (region_config.top_shell_layers > 0 || this->object()->print()->config().spiral_mode)) || (iron_everything && surface.surface_type == stBottom && region_config.bottom_shell_layers > 0))
@@ -1634,7 +1644,15 @@ void Layer::make_ironing()
 			}
 			// Trim the top surfaces with half the nozzle diameter.
             // BBS: ironing inset
-            double ironing_areas_offset = ironing_params.inset == 0 ? float(scale_(0.5 * nozzle_dmr)) : scale_(ironing_params.inset);
+            // Slope surface ironing uses inset=-1 (sentinel) meaning no inset at all — the
+            // slope step bands are already narrow so we iron right to the perimeter edge.
+            double ironing_areas_offset;
+            if (ironing_params.inset < 0)
+                ironing_areas_offset = 0;
+            else if (ironing_params.inset == 0)
+                ironing_areas_offset = float(scale_(0.5 * nozzle_dmr));
+            else
+                ironing_areas_offset = scale_(ironing_params.inset);
 			ironing_areas = intersection_ex(polys, offset(this->lslices, - ironing_areas_offset));
 		}
 
@@ -1645,8 +1663,54 @@ void Layer::make_ironing()
 		double  extrusion_height = ironing_params.height * f->spacing / nozzle_dmr;
 		float  extrusion_width  = Flow::rounded_rectangle_extrusion_width_from_spacing(float(nozzle_dmr), float(extrusion_height));
 		double flow_mm3_per_mm = nozzle_dmr * extrusion_height;
+
+        // Whether this pass is slope surface ironing — each ExPolygon is tested
+        // individually and ironed only when it qualifies as a stair-step band.
+        const bool is_slope_mode = ironing_params.inset < 0;
+        const PrintRegionConfig *slope_cfg = is_slope_mode
+            ? &ironing_params.layerm->region().config()
+            : nullptr;
+
         Surface surface_fill(stTop, ExPolygon());
         for (ExPolygon &expoly : ironing_areas) {
+            // ---- Slope surface ironing: per-polygon angle detection ----
+            if (is_slope_mode) {
+                // Approximate average step width using the inscribed-circle radius:
+                //   avg_step_width = 2 * area / perimeter
+                // A narrow band (step on a slope) has a small ratio; a flat top has a large one.
+                double poly_area_mm2     = unscale<double>(unscale<double>((double)expoly.area()));
+                double poly_perim_mm     = unscale<double>((double)expoly.contour.length());
+                for (const Polygon &hole : expoly.holes)
+                    poly_perim_mm += unscale<double>((double)hole.length());
+                double avg_step_width_mm = (poly_perim_mm > EPSILON)
+                    ? 2.0 * poly_area_mm2 / poly_perim_mm
+                    : 0.0;
+
+                // Skip polygons with zero or negligible step width.
+                if (avg_step_width_mm < EPSILON)
+                    continue;
+
+                // Compute the slope angle from the step width and layer height.
+                // slope_angle: angle from horizontal (0° = flat, 90° = vertical wall).
+                double slope_angle_deg = Geometry::rad2deg(std::atan(default_layer_height / avg_step_width_mm));
+
+                // Skip surfaces outside the configured angle range.
+                if (slope_angle_deg < slope_cfg->ironing_slope_min_angle.value ||
+                    slope_angle_deg > slope_cfg->ironing_slope_max_angle.value)
+                    continue;
+
+                // Orient ironing lines parallel to the slope's contour so they run
+                // *along* the slope rather than cutting across the narrow band.
+                // Use the bounding-box major axis as a proxy for the contour direction.
+                BoundingBox bbox = expoly.contour.bounding_box();
+                double bbox_w = unscale<double>(bbox.size()(0));
+                double bbox_h = unscale<double>(bbox.size()(1));
+                // Major axis angle: 0° if wider than tall, 90° if taller than wide.
+                double contour_angle = (bbox_w >= bbox_h) ? 0.0 : M_PI / 2.0;
+                f->angle = float(contour_angle);
+            }
+            // ---- End slope detection ----
+
 			surface_fill.expolygon = std::move(expoly);
 			Polylines polylines;
 			try {
@@ -1659,10 +1723,40 @@ void Layer::make_ironing()
 		        ironing_params.layerm->fills.entities.push_back(eec = new ExtrusionEntityCollection());
 		        // Don't sort the ironing infill lines as they are monotonicly ordered.
 				eec->no_sort = true;
-		        extrusion_entities_append_paths(
-		            eec->entities, std::move(polylines),
-		            erIroning,
-		            flow_mm3_per_mm, extrusion_width, float(extrusion_height));
+
+                // Slope Z-stepping: assign each ironing line a constant Z that varies
+                // linearly across the slope band, approximating the slope angle in GCode.
+                // Uses ExtrusionPathSloped which _extrude() already handles natively.
+                //
+                // z_ratio is normalised relative to the extrusion height h:
+                //   Z = lerp(m_nominal_z - h, m_nominal_z, z_ratio)
+                // To span a full layer height we extrapolate outside [0,1]:
+                //   z_ratio_min = 1 - layer_height / extrusion_height
+                //
+                // NOTE for future Non-Planar Z-Varied mode: replace the linear ramp with
+                // per-point z_ratio values derived from a mesh raycast
+                // (AABBTreeIndirect::intersect_ray_first_hit) against
+                // model_object()->raw_indexed_triangle_set(). The GCode pipeline
+                // already interpolates z_ratio per-segment in _extrude().
+                if (is_slope_mode && slope_cfg->ironing_slope_zstep.value && extrusion_height > EPSILON) {
+                    const double z_ratio_min  = 1.0 - default_layer_height / extrusion_height;
+                    const size_t n            = polylines.size();
+                    ExtrusionPath base_path(erIroning, flow_mm3_per_mm, extrusion_width, float(extrusion_height));
+                    for (size_t li = 0; li < n; ++li) {
+                        // Interpolate from z_ratio_min (first/outer line) to 1.0 (last/inner line).
+                        const double t     = (n > 1) ? (double)li / (double)(n - 1) : 0.0;
+                        const double z_rat = z_ratio_min + t * (1.0 - z_ratio_min);
+                        // Constant Z per line (slope_begin == slope_end).
+                        const ExtrusionPathSloped::Slope slope{z_rat, 1.0};
+                        eec->entities.push_back(
+                            new ExtrusionPathSloped(std::move(polylines[li]), base_path, slope, slope));
+                    }
+                } else {
+		            extrusion_entities_append_paths(
+		                eec->entities, std::move(polylines),
+		                erIroning,
+		                flow_mm3_per_mm, extrusion_width, float(extrusion_height));
+                }
 		    }
 		}
 

@@ -82,6 +82,7 @@ enum class IroningType {
     TopSurfaces,
     TopmostOnly,
     AllSolid,
+    SlopeSurfaces,
     Count,
 };
 
@@ -1030,6 +1031,9 @@ PRINT_CONFIG_CLASS_DEFINE(
     ((ConfigOptionFloat, ironing_direction))
     ((ConfigOptionFloat, ironing_speed))
     ((ConfigOptionFloat, ironing_angle))
+    ((ConfigOptionFloat, ironing_slope_min_angle))
+    ((ConfigOptionFloat, ironing_slope_max_angle))
+    ((ConfigOptionBool,  ironing_slope_zstep))
     // Detect bridging perimeters
     ((ConfigOptionBool, detect_overhang_wall))
     ((ConfigOptionInt, wall_filament))

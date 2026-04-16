@@ -178,7 +178,8 @@ static t_config_enum_values s_keys_map_IroningType {
     { "no ironing",     int(IroningType::NoIroning) },
     { "top",            int(IroningType::TopSurfaces) },
     { "topmost",        int(IroningType::TopmostOnly) },
-    { "solid",          int(IroningType::AllSolid) }
+    { "solid",          int(IroningType::AllSolid) },
+    { "slopes",         int(IroningType::SlopeSurfaces) }
 };
 CONFIG_OPTION_ENUM_DEFINE_STATIC_MAPS(IroningType)
 
@@ -3510,10 +3511,12 @@ void PrintConfigDef::init_fff_params()
     def->enum_values.push_back("top");
     def->enum_values.push_back("topmost");
     def->enum_values.push_back("solid");
+    def->enum_values.push_back("slopes");
     def->enum_labels.push_back(L("No ironing"));
     def->enum_labels.push_back(L("Top surfaces"));
     def->enum_labels.push_back(L("Topmost surface"));
     def->enum_labels.push_back(L("All solid layer"));
+    def->enum_labels.push_back(L("Slope surfaces"));
     def->mode = comAdvanced;
     def->set_default_value(new ConfigOptionEnum<IroningType>(IroningType::NoIroning));
 
@@ -3579,6 +3582,37 @@ void PrintConfigDef::init_fff_params()
     def->max      = 359;
     def->mode     = comAdvanced;
     def->set_default_value(new ConfigOptionFloat(-1));
+
+    def           = this->add("ironing_slope_min_angle", coFloat);
+    def->label    = L("Slope ironing min angle");
+    def->category = L("Quality");
+    def->tooltip  = L("Minimum slope angle (from horizontal) for slope surface ironing. "
+                      "Surfaces shallower than this are already handled by top surface ironing.");
+    def->sidetext = "°";
+    def->min      = 5;
+    def->max      = 85;
+    def->mode     = comAdvanced;
+    def->set_default_value(new ConfigOptionFloat(15));
+
+    def           = this->add("ironing_slope_max_angle", coFloat);
+    def->label    = L("Slope ironing max angle");
+    def->category = L("Quality");
+    def->tooltip  = L("Maximum slope angle (from horizontal) for slope surface ironing. "
+                      "Surfaces steeper than this cannot be reached by the nozzle.");
+    def->sidetext = "°";
+    def->min      = 5;
+    def->max      = 85;
+    def->mode     = comAdvanced;
+    def->set_default_value(new ConfigOptionFloat(60));
+
+    def          = this->add("ironing_slope_zstep", coBool);
+    def->label   = L("Slope ironing Z-stepping");
+    def->category = L("Quality");
+    def->tooltip  = L("When enabled, each ironing line on a slope surface increments Z slightly "
+                      "to follow the surface angle, producing a quasi-non-planar pass. "
+                      "Requires firmware that accepts mid-layer Z moves (e.g. Klipper non-planar).");
+    def->mode     = comAdvanced;
+    def->set_default_value(new ConfigOptionBool(false));
 
     def = this->add("layer_change_gcode", coString);
     def->label = L("Layer change G-code");
