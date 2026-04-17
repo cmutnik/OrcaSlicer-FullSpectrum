@@ -912,47 +912,67 @@ bool ObjColorPanel::find_best_blend(const wxColour &target,
     float tL, ta, tb;
     RGB2Lab(target.Red(), target.Green(), target.Blue(), &tL, &ta, &tb);
 
-    float best_de   = std::numeric_limits<float>::max();
-    int   best_i    = -1, best_j = -1;
-    int   best_pct  = 50;
-    std::string best_hex;
+    // Phase 1: use Lab-space projection to find the best (i,j) pair and the
+    // comparison DeltaE.  Lab projection always finds a point on the segment
+    // whose DeltaE is ≤ either endpoint, so proposals are created for any
+    // cluster color that lies between two physical filaments in Lab space.
+    float best_lab_de = std::numeric_limits<float>::max();
+    int   best_i = -1, best_j = -1;
+    float best_t = 0.5f;
 
     for (int i = 0; i < (int)physicals.size(); ++i) {
-        std::string hex_i = physicals[i].GetAsString(wxC2S_HTML_SYNTAX).ToStdString();
-
+        float L1, a1, b1;
+        RGB2Lab(physicals[i].Red(), physicals[i].Green(), physicals[i].Blue(), &L1, &a1, &b1);
         for (int j = i + 1; j < (int)physicals.size(); ++j) {
-            std::string hex_j = physicals[j].GetAsString(wxC2S_HTML_SYNTAX).ToStdString();
-
-            // Iterate all percentages using the actual FilamentMixer (pigment model) so
-            // the chosen ratio and DeltaE both reflect what the printer will produce.
-            for (int pct = 0; pct <= 100; ++pct) {
-                std::string blended = Slic3r::MixedFilamentManager::blend_color(
-                    hex_i, hex_j, 100 - pct, pct);
-                if (blended.size() < 7) continue;
-                wxColour bc(blended.substr(0, 7));
-                float bL, ba, bb_;
-                RGB2Lab(bc.Red(), bc.Green(), bc.Blue(), &bL, &ba, &bb_);
-                float de = DeltaE76(tL, ta, tb, bL, ba, bb_);
-                if (de < best_de) {
-                    best_de  = de;
-                    best_i   = i;
-                    best_j   = j;
-                    best_pct = pct;
-                    best_hex = blended;
-                }
+            float L2, a2, b2;
+            RGB2Lab(physicals[j].Red(), physicals[j].Green(), physicals[j].Blue(), &L2, &a2, &b2);
+            float dL = L2-L1, da = a2-a1, db = b2-b1;
+            float len2 = dL*dL + da*da + db*db;
+            float t = 0.5f;
+            if (len2 > 1e-6f) {
+                t = ((tL-L1)*dL + (ta-a1)*da + (tb-b1)*db) / len2;
+                t = std::max(0.0f, std::min(1.0f, t));
+            }
+            float bL2 = L1+t*(L2-L1), ba2 = a1+t*(a2-a1), bb2 = b1+t*(b2-b1);
+            float de = DeltaE76(tL, ta, tb, bL2, ba2, bb2);
+            if (de < best_lab_de) {
+                best_lab_de = de; best_i = i; best_j = j; best_t = t;
             }
         }
     }
 
     if (best_i < 0) return false;
 
-    out_de            = best_de;
+    // Phase 2: find the FilamentMixer ratio near the Lab-projected t that gives
+    // the most hue-accurate display color.  Search ±15 pct around the Lab t.
+    std::string hex_i = physicals[best_i].GetAsString(wxC2S_HTML_SYNTAX).ToStdString();
+    std::string hex_j = physicals[best_j].GetAsString(wxC2S_HTML_SYNTAX).ToStdString();
+    const int lab_pct = static_cast<int>(std::round(best_t * 100.0f));
+    const int search_lo = std::max(0, lab_pct - 15);
+    const int search_hi = std::min(100, lab_pct + 15);
+    float best_fm_de = std::numeric_limits<float>::max();
+    int   best_fm_pct = lab_pct;
+    std::string best_fm_hex;
+    for (int pct = search_lo; pct <= search_hi; ++pct) {
+        std::string blended = Slic3r::MixedFilamentManager::blend_color(hex_i, hex_j, 100-pct, pct);
+        if (blended.size() < 7) continue;
+        wxColour bc(blended.substr(0, 7));
+        float bL2, ba2, bb2;
+        RGB2Lab(bc.Red(), bc.Green(), bc.Blue(), &bL2, &ba2, &bb2);
+        float de = DeltaE76(tL, ta, tb, bL2, ba2, bb2);
+        if (de < best_fm_de) { best_fm_de = de; best_fm_pct = pct; best_fm_hex = blended; }
+    }
+
+    // out_de uses the Lab-projection value so the proposal comparison threshold
+    // behaves the same as before.  The mix_b_percent and blended color use the
+    // FilamentMixer-optimised ratio for accurate hue.
+    out_de            = best_lab_de;
     out.component_a   = static_cast<unsigned int>(best_i + 1);
     out.component_b   = static_cast<unsigned int>(best_j + 1);
-    out.mix_b_percent = best_pct;
+    out.mix_b_percent = best_fm_pct;
     out.component_c   = 0;
-    if (best_hex.size() >= 7)
-        out_blended = wxColour(best_hex.substr(0, 7));
+    if (best_fm_hex.size() >= 7)
+        out_blended = wxColour(best_fm_hex.substr(0, 7));
     return true;
 }
 
