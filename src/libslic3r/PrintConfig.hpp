@@ -83,6 +83,7 @@ enum class IroningType {
     TopmostOnly,
     AllSolid,
     SlopeSurfaces,
+    NonPlanar,
     Count,
 };
 

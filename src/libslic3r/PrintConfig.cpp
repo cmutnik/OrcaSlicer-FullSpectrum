@@ -179,7 +179,8 @@ static t_config_enum_values s_keys_map_IroningType {
     { "top",            int(IroningType::TopSurfaces) },
     { "topmost",        int(IroningType::TopmostOnly) },
     { "solid",          int(IroningType::AllSolid) },
-    { "slopes",         int(IroningType::SlopeSurfaces) }
+    { "slopes",         int(IroningType::SlopeSurfaces) },
+    { "nonplanar",      int(IroningType::NonPlanar) }
 };
 CONFIG_OPTION_ENUM_DEFINE_STATIC_MAPS(IroningType)
 
@@ -3512,11 +3513,13 @@ void PrintConfigDef::init_fff_params()
     def->enum_values.push_back("topmost");
     def->enum_values.push_back("solid");
     def->enum_values.push_back("slopes");
+    def->enum_values.push_back("nonplanar");
     def->enum_labels.push_back(L("No ironing"));
     def->enum_labels.push_back(L("Top surfaces"));
     def->enum_labels.push_back(L("Topmost surface"));
     def->enum_labels.push_back(L("All solid layer"));
     def->enum_labels.push_back(L("Slope surfaces"));
+    def->enum_labels.push_back(L("Non-planar (mesh-accurate)"));
     def->mode = comAdvanced;
     def->set_default_value(new ConfigOptionEnum<IroningType>(IroningType::NoIroning));
 
