@@ -155,7 +155,11 @@ public:
     void add_custom_filament(wxColour new_col);
     unsigned int add_mixed_filament_from_import(unsigned int component_a,
                                                  unsigned int component_b,
-                                                 int          mix_b_percent);
+                                                 int          mix_b_percent,
+                                                 unsigned int component_c = 0,
+                                                 int weight_a = 0,
+                                                 int weight_b = 0,
+                                                 int weight_c = 0);
     void set_filament_colors_from_import(const std::vector<wxColour> &colors);
     void edit_filament();
 

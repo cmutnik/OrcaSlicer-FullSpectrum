@@ -212,14 +212,16 @@ public:
     // Return the display colours of all enabled mixed filaments (in order).
     std::vector<std::string> display_colors() const;
 
+    // Recompute the display_color field for every entry in m_mixed.
+    // Call after externally patching gradient fields on a just-added entry.
+    void refresh_display_colors(const std::vector<std::string> &filament_colours);
+
 private:
     // Convert a 1-based virtual ID to a 0-based index into m_mixed.
     size_t index_of(unsigned int filament_id, size_t num_physical) const
     {
         return static_cast<size_t>(filament_id - num_physical - 1);
     }
-
-    void refresh_display_colors(const std::vector<std::string> &filament_colours);
     uint64_t allocate_stable_id();
     uint64_t normalize_stable_id(uint64_t stable_id);
 

@@ -948,7 +948,7 @@ void MixedFilamentManager::add_custom_filament(unsigned int component_a,
     mf.gradient_component_ids.clear();
     mf.gradient_component_weights.clear();
     mf.pointillism_all_filaments = false;
-    mf.distribution_mode = int(MixedFilament::Simple);
+    mf.distribution_mode = int(MixedFilament::SameLayerPointillisme);
     mf.enabled = true;
     mf.deleted = false;
     mf.custom = true;

@@ -17,7 +17,12 @@ class ComboBox;
 struct MixProposal {
     unsigned int component_a;   // 1-based physical filament index
     unsigned int component_b;
-    int          mix_b_percent; // 0..100
+    int          mix_b_percent; // 0..100, used when component_c == 0
+    // Gradient extension — component_c > 0 signals a 3-component gradient blend
+    unsigned int component_c = 0;
+    int          weight_a    = 0; // weights sum to 100 (used when component_c > 0)
+    int          weight_b    = 0;
+    int          weight_c    = 0;
 };
 
 struct ColorDistValue
@@ -66,10 +71,15 @@ private:
     void deal_default_strategy();
     int find_filament_selection_by_color(const wxColour &color) const;
     int append_new_filament_option(const wxColour &color);
-    int append_mixed_proposal_option(unsigned int a, unsigned int b, int pct, const wxColour &blended);
+    int append_mixed_proposal_option(unsigned int a, unsigned int b, int pct,
+                                     const wxColour &blended, const MixProposal &full_prop);
     static bool find_best_blend(const wxColour &target,
                                 const std::vector<wxColour> &physicals,
                                 MixProposal &out, float &out_de, wxColour &out_blended);
+    static bool find_best_gradient_blend(const wxColour &target,
+                                         const std::vector<wxColour> &physicals,
+                                         float best_2comp_de,
+                                         MixProposal &out, float &out_de, wxColour &out_blended);
     static std::vector<wxColour> optimize_physical_colors(
         const std::vector<wxColour>      &cluster_targets,
         const std::vector<int>           &cluster_to_slot,
