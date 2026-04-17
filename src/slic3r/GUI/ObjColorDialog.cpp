@@ -1,4 +1,5 @@
 #include <algorithm>
+#include <limits>
 #include <map>
 #include <sstream>
 //#include "libslic3r/FlushVolCalc.hpp"
@@ -465,7 +466,8 @@ void ObjColorPanel::update_filament_ids()
         if (it == m_mix_proposals_by_slot.end()) continue;
         auto &prop = it->second;
         unsigned int virtual_id = wxGetApp().sidebar().add_mixed_filament_from_import(
-            prop.component_a, prop.component_b, prop.mix_b_percent);
+            prop.component_a, prop.component_b, prop.mix_b_percent,
+            prop.component_c, prop.weight_a, prop.weight_b, prop.weight_c);
         appended_filament_id_map.emplace(slot, static_cast<int>(virtual_id));
     }
 
@@ -690,16 +692,26 @@ void ObjColorPanel::deal_keep_all_colors_btn()
         // Always attempt a blend. Use it whenever it's better than the nearest physical,
         // even by a small margin. Never fall back to adding a new physical filament slot.
         MixProposal prop;
-        float       blend_de;
+        float       blend_de = std::numeric_limits<float>::max();
         wxColour    blended;
-        if (find_best_blend(c, m_colours, prop, blend_de, blended)
-            && blend_de < dists[0].distance)
-        {
+        bool        have_blend = find_best_blend(c, m_colours, prop, blend_de, blended);
+
+        // If the 2-component blend still doesn't match well, try a 3-component gradient.
+        if (!have_blend || blend_de > BLEND_MATCH_THRESHOLD) {
+            MixProposal gprop; float gde; wxColour gblended;
+            if (find_best_gradient_blend(c, m_colours, blend_de, gprop, gde, gblended)) {
+                prop = gprop; blend_de = gde; blended = gblended;
+                have_blend = true;
+            }
+        }
+
+        if (have_blend && blend_de < dists[0].distance) {
             // Deduplicate: reuse an existing proposal slot if close enough (±2%)
             int existing_slot = 0;
             for (auto &kv : m_mix_proposals_by_slot) {
                 if (kv.second.component_a == prop.component_a &&
                     kv.second.component_b == prop.component_b &&
+                    kv.second.component_c == prop.component_c &&
                     std::abs(kv.second.mix_b_percent - prop.mix_b_percent) <= 2) {
                     existing_slot = kv.first;
                     break;
@@ -708,7 +720,7 @@ void ObjColorPanel::deal_keep_all_colors_btn()
             int slot = existing_slot > 0
                 ? existing_slot
                 : append_mixed_proposal_option(prop.component_a, prop.component_b,
-                                               prop.mix_b_percent, blended);
+                                               prop.mix_b_percent, blended, prop);
             if (slot > 0)
                 new_index = slot;
         }
@@ -758,9 +770,20 @@ void ObjColorPanel::deal_approximate_match_btn()
         // approximation by blending two existing physical filaments.
         if (color_dists[0].distance > BLEND_MATCH_THRESHOLD) {
             MixProposal prop;
-            float       blend_de;
+            float       blend_de = std::numeric_limits<float>::max();
             wxColour    blended;
-            if (find_best_blend(c, m_colours, prop, blend_de, blended)
+            bool        have_blend = find_best_blend(c, m_colours, prop, blend_de, blended);
+
+            // If the 2-component blend still doesn't match well, try a 3-component gradient.
+            if (!have_blend || blend_de > BLEND_MATCH_THRESHOLD) {
+                MixProposal gprop; float gde; wxColour gblended;
+                if (find_best_gradient_blend(c, m_colours, blend_de, gprop, gde, gblended)) {
+                    prop = gprop; blend_de = gde; blended = gblended;
+                    have_blend = true;
+                }
+            }
+
+            if (have_blend
                 && blend_de < color_dists[0].distance
                 && blend_de < BLEND_ACCEPT_MAX_DE)
             {
@@ -770,6 +793,7 @@ void ObjColorPanel::deal_approximate_match_btn()
                     auto &p = kv.second;
                     if (p.component_a == prop.component_a
                         && p.component_b == prop.component_b
+                        && p.component_c == prop.component_c
                         && std::abs(p.mix_b_percent - prop.mix_b_percent) <= 2) {
                         existing_slot = kv.first;
                         break;
@@ -778,7 +802,7 @@ void ObjColorPanel::deal_approximate_match_btn()
                 int slot = existing_slot > 0
                     ? existing_slot
                     : append_mixed_proposal_option(prop.component_a, prop.component_b,
-                                                   prop.mix_b_percent, blended);
+                                                   prop.mix_b_percent, blended, prop);
                 if (slot > 0)
                     new_index = slot;
             }
@@ -828,14 +852,25 @@ void ObjColorPanel::deal_approximate_match_btn()
             std::sort(dists.begin(), dists.end(), [](auto &a, auto &b) { return a.distance < b.distance; });
             int new_index_opt = dists[0].id;
             if (dists[0].distance > BLEND_MATCH_THRESHOLD) {
-                MixProposal prop; float blend_de; wxColour blended;
-                if (find_best_blend(c, m_optimized_physical_colors, prop, blend_de, blended)
-                    && blend_de < dists[0].distance && blend_de < BLEND_ACCEPT_MAX_DE)
-                {
+                MixProposal prop;
+                float       blend_de = std::numeric_limits<float>::max();
+                wxColour    blended;
+                bool        have_blend = find_best_blend(c, m_optimized_physical_colors, prop, blend_de, blended);
+
+                if (!have_blend || blend_de > BLEND_MATCH_THRESHOLD) {
+                    MixProposal gprop; float gde; wxColour gblended;
+                    if (find_best_gradient_blend(c, m_optimized_physical_colors, blend_de, gprop, gde, gblended)) {
+                        prop = gprop; blend_de = gde; blended = gblended;
+                        have_blend = true;
+                    }
+                }
+
+                if (have_blend && blend_de < dists[0].distance && blend_de < BLEND_ACCEPT_MAX_DE) {
                     int existing_slot = 0;
                     for (auto &kv : m_mix_proposals_by_slot) {
                         if (kv.second.component_a == prop.component_a &&
                             kv.second.component_b == prop.component_b &&
+                            kv.second.component_c == prop.component_c &&
                             std::abs(kv.second.mix_b_percent - prop.mix_b_percent) <= 2) {
                             existing_slot = kv.first; break;
                         }
@@ -843,7 +878,7 @@ void ObjColorPanel::deal_approximate_match_btn()
                     int slot = existing_slot > 0
                         ? existing_slot
                         : append_mixed_proposal_option(prop.component_a, prop.component_b,
-                                                       prop.mix_b_percent, blended);
+                                                       prop.mix_b_percent, blended, prop);
                     if (slot > 0) new_index_opt = slot;
                 }
             }
@@ -877,37 +912,34 @@ bool ObjColorPanel::find_best_blend(const wxColour &target,
     float tL, ta, tb;
     RGB2Lab(target.Red(), target.Green(), target.Blue(), &tL, &ta, &tb);
 
-    float best_de = std::numeric_limits<float>::max();
-    int   best_i  = -1, best_j = -1;
-    float best_t  = 0.5f;
+    float best_de   = std::numeric_limits<float>::max();
+    int   best_i    = -1, best_j = -1;
+    int   best_pct  = 50;
+    std::string best_hex;
 
     for (int i = 0; i < (int)physicals.size(); ++i) {
-        float L1, a1, b1;
-        RGB2Lab(physicals[i].Red(), physicals[i].Green(), physicals[i].Blue(), &L1, &a1, &b1);
+        std::string hex_i = physicals[i].GetAsString(wxC2S_HTML_SYNTAX).ToStdString();
 
         for (int j = i + 1; j < (int)physicals.size(); ++j) {
-            float L2, a2, b2;
-            RGB2Lab(physicals[j].Red(), physicals[j].Green(), physicals[j].Blue(), &L2, &a2, &b2);
+            std::string hex_j = physicals[j].GetAsString(wxC2S_HTML_SYNTAX).ToStdString();
 
-            // Closed-form: project target onto line segment c1..c2 in Lab space
-            float dL = L2 - L1, da = a2 - a1, db = b2 - b1;
-            float len2 = dL*dL + da*da + db*db;
-            float t = 0.5f;
-            if (len2 > 1e-6f) {
-                t = ((tL - L1)*dL + (ta - a1)*da + (tb - b1)*db) / len2;
-                t = std::max(0.0f, std::min(1.0f, t));
-            }
-
-            float bL = L1 + t*(L2 - L1);
-            float ba = a1 + t*(a2 - a1);
-            float bb_ = b1 + t*(b2 - b1);
-            float de = DeltaE76(tL, ta, tb, bL, ba, bb_);
-
-            if (de < best_de) {
-                best_de = de;
-                best_i  = i;
-                best_j  = j;
-                best_t  = t;
+            // Iterate all percentages using the actual FilamentMixer (pigment model) so
+            // the chosen ratio and DeltaE both reflect what the printer will produce.
+            for (int pct = 0; pct <= 100; ++pct) {
+                std::string blended = Slic3r::MixedFilamentManager::blend_color(
+                    hex_i, hex_j, 100 - pct, pct);
+                if (blended.size() < 7) continue;
+                wxColour bc(blended.substr(0, 7));
+                float bL, ba, bb_;
+                RGB2Lab(bc.Red(), bc.Green(), bc.Blue(), &bL, &ba, &bb_);
+                float de = DeltaE76(tL, ta, tb, bL, ba, bb_);
+                if (de < best_de) {
+                    best_de  = de;
+                    best_i   = i;
+                    best_j   = j;
+                    best_pct = pct;
+                    best_hex = blended;
+                }
             }
         }
     }
@@ -917,30 +949,80 @@ bool ObjColorPanel::find_best_blend(const wxColour &target,
     out_de            = best_de;
     out.component_a   = static_cast<unsigned int>(best_i + 1);
     out.component_b   = static_cast<unsigned int>(best_j + 1);
-    out.mix_b_percent = static_cast<int>(std::round(best_t * 100.0f));
+    out.mix_b_percent = best_pct;
+    out.component_c   = 0;
+    if (best_hex.size() >= 7)
+        out_blended = wxColour(best_hex.substr(0, 7));
+    return true;
+}
 
-    // Compute accurate blended color via FilamentMixer (same algorithm as the sidebar preview)
-    std::string hex_a = physicals[best_i].GetAsString(wxC2S_HTML_SYNTAX).ToStdString();
-    std::string hex_b = physicals[best_j].GetAsString(wxC2S_HTML_SYNTAX).ToStdString();
-    int pct_b         = out.mix_b_percent;
-    std::string blended_hex = Slic3r::MixedFilamentManager::blend_color(hex_a, hex_b,
-                                                                          100 - pct_b, pct_b);
-    if (blended_hex.size() >= 7)
-        out_blended = wxColour(blended_hex.substr(0, 7));
-    else
-        out_blended = wxColour(
-            static_cast<int>(physicals[best_i].Red()   * (1.0f - best_t) + physicals[best_j].Red()   * best_t),
-            static_cast<int>(physicals[best_i].Green() * (1.0f - best_t) + physicals[best_j].Green() * best_t),
-            static_cast<int>(physicals[best_i].Blue()  * (1.0f - best_t) + physicals[best_j].Blue()  * best_t));
+bool ObjColorPanel::find_best_gradient_blend(const wxColour &target,
+                                              const std::vector<wxColour> &physicals,
+                                              float best_2comp_de,
+                                              MixProposal &out, float &out_de, wxColour &out_blended)
+{
+    if (physicals.size() < 3) return false;
+
+    float tL, ta, tb;
+    RGB2Lab(target.Red(), target.Green(), target.Blue(), &tL, &ta, &tb);
+
+    float best_de  = best_2comp_de; // only beat the 2-component result
+    int   best_i   = -1, best_j = -1, best_k = -1;
+    int   best_wa  = 0, best_wb = 0, best_wc = 0;
+    std::string best_hex;
+
+    const int step = 10; // coarse grid: 11^2 / 2 evaluations per triplet
+    for (int i = 0; i < (int)physicals.size(); ++i) {
+        std::string hex_i = physicals[i].GetAsString(wxC2S_HTML_SYNTAX).ToStdString();
+        for (int j = i + 1; j < (int)physicals.size(); ++j) {
+            std::string hex_j = physicals[j].GetAsString(wxC2S_HTML_SYNTAX).ToStdString();
+            for (int k = j + 1; k < (int)physicals.size(); ++k) {
+                std::string hex_k = physicals[k].GetAsString(wxC2S_HTML_SYNTAX).ToStdString();
+
+                for (int wa = 0; wa <= 100; wa += step) {
+                    for (int wb = 0; wb <= 100 - wa; wb += step) {
+                        int wc = 100 - wa - wb;
+                        std::string blended = Slic3r::MixedFilamentManager::blend_color_multi(
+                            {{hex_i, wa}, {hex_j, wb}, {hex_k, wc}});
+                        if (blended.size() < 7) continue;
+                        wxColour bc(blended.substr(0, 7));
+                        float bL, ba, bb_;
+                        RGB2Lab(bc.Red(), bc.Green(), bc.Blue(), &bL, &ba, &bb_);
+                        float de = DeltaE76(tL, ta, tb, bL, ba, bb_);
+                        if (de < best_de) {
+                            best_de = de;
+                            best_i = i; best_j = j; best_k = k;
+                            best_wa = wa; best_wb = wb; best_wc = wc;
+                            best_hex = blended;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if (best_i < 0) return false;
+
+    out_de            = best_de;
+    out.component_a   = static_cast<unsigned int>(best_i + 1);
+    out.component_b   = static_cast<unsigned int>(best_j + 1);
+    out.component_c   = static_cast<unsigned int>(best_k + 1);
+    out.weight_a      = best_wa;
+    out.weight_b      = best_wb;
+    out.weight_c      = best_wc;
+    out.mix_b_percent = best_wb; // approximate for dedup; gradient_weights is authoritative
+    if (best_hex.size() >= 7)
+        out_blended = wxColour(best_hex.substr(0, 7));
     return true;
 }
 
 int ObjColorPanel::append_mixed_proposal_option(unsigned int a, unsigned int b, int pct,
-                                                  const wxColour &blended)
+                                                  const wxColour &blended,
+                                                  const MixProposal &full_prop)
 {
     int slot = append_new_filament_option(blended);
     if (slot > 0)
-        m_mix_proposals_by_slot.emplace(slot, MixProposal{a, b, pct});
+        m_mix_proposals_by_slot.emplace(slot, full_prop);
     return slot;
 }
 

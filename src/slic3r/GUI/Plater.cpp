@@ -5181,13 +5181,26 @@ void Sidebar::delete_filament(size_t filament_id, int replace_filament_id)
 
 unsigned int Sidebar::add_mixed_filament_from_import(unsigned int component_a,
                                                        unsigned int component_b,
-                                                       int          mix_b_percent)
+                                                       int          mix_b_percent,
+                                                       unsigned int component_c,
+                                                       int weight_a, int weight_b, int weight_c)
 {
     auto &mgr = wxGetApp().preset_bundle->mixed_filaments;
     const std::vector<std::string> filament_colours =
         wxGetApp().plater()->get_extruder_colors_from_plater_config();
 
     mgr.add_custom_filament(component_a, component_b, mix_b_percent, filament_colours);
+
+    // If a 3-component gradient was requested, patch the entry that was just appended.
+    if (component_c > 0 && !mgr.mixed_filaments().empty()) {
+        auto &mf = mgr.mixed_filaments().back();
+        mf.gradient_component_ids =
+            std::to_string(component_a) + std::to_string(component_b) + std::to_string(component_c);
+        mf.gradient_component_weights =
+            std::to_string(weight_a) + "/" + std::to_string(weight_b) + "/" + std::to_string(weight_c);
+        mf.distribution_mode = int(Slic3r::MixedFilament::SameLayerPointillisme);
+        mgr.refresh_display_colors(filament_colours);
+    }
 
     // Persist so the new entry survives the clear/load cycle in update_mixed_filament_panel
     if (auto *opt = wxGetApp().preset_bundle->project_config
