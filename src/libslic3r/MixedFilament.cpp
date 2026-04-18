@@ -1,5 +1,6 @@
 #include "MixedFilament.hpp"
 #include "filament_mixer.h"
+#include "kubelka_munk.h"
 
 #include <algorithm>
 #include <atomic>
@@ -1529,7 +1530,8 @@ const MixedFilament *MixedFilamentManager::mixed_filament_from_id(unsigned int f
     return idx >= 0 ? &m_mixed[size_t(idx)] : nullptr;
 }
 
-// Blend N colours using weighted pairwise FilamentMixer blending.
+// Blend N colours using single-pass Kubelka-Munk mixing.
+// Avoids the progressive quantisation error of sequential pairwise blending.
 std::string MixedFilamentManager::blend_color_multi(
     const std::vector<std::pair<std::string, int>> &color_percents)
 {
@@ -1538,43 +1540,23 @@ std::string MixedFilamentManager::blend_color_multi(
     if (color_percents.size() == 1)
         return color_percents.front().first;
 
-    struct WeightedColor {
-        RGB color;
-        int pct;
-    };
-    std::vector<WeightedColor> colors;
-    colors.reserve(color_percents.size());
+    std::vector<kubelka_munk::WeightedRGB> km_colors;
+    km_colors.reserve(color_percents.size());
 
-    int total_pct = 0;
     for (const auto &[hex, pct] : color_percents) {
         if (pct <= 0)
             continue;
-        colors.push_back({parse_hex_color(hex), pct});
-        total_pct += pct;
+        const RGB c = parse_hex_color(hex);
+        km_colors.push_back({static_cast<unsigned char>(c.r),
+                             static_cast<unsigned char>(c.g),
+                             static_cast<unsigned char>(c.b),
+                             static_cast<float>(pct)});
     }
-    if (colors.empty() || total_pct <= 0)
+    if (km_colors.empty())
         return "#000000";
 
-    unsigned char r = static_cast<unsigned char>(colors.front().color.r);
-    unsigned char g = static_cast<unsigned char>(colors.front().color.g);
-    unsigned char b = static_cast<unsigned char>(colors.front().color.b);
-    int accumulated_pct = colors.front().pct;
-
-    for (size_t i = 1; i < colors.size(); ++i) {
-        const auto &next = colors[i];
-        const int new_total = accumulated_pct + next.pct;
-        if (new_total <= 0)
-            continue;
-        const float t = static_cast<float>(next.pct) / static_cast<float>(new_total);
-        filament_mixer_lerp(
-            r, g, b,
-            static_cast<unsigned char>(next.color.r),
-            static_cast<unsigned char>(next.color.g),
-            static_cast<unsigned char>(next.color.b),
-            t, &r, &g, &b);
-        accumulated_pct = new_total;
-    }
-
+    unsigned char r = 0, g = 0, b = 0;
+    kubelka_munk::lerp_multi(km_colors, &r, &g, &b);
     return rgb_to_hex({int(r), int(g), int(b)});
 }
 
