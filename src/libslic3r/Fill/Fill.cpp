@@ -1693,9 +1693,6 @@ void Layer::make_ironing()
         f->spacing = ironing_params.line_spacing;
         f->angle = float(ironing_params.angle);
         f->link_max_length = (coord_t) scale_(3. * f->spacing);
-		double  extrusion_height = ironing_params.height * f->spacing / nozzle_dmr;
-		float  extrusion_width  = Flow::rounded_rectangle_extrusion_width_from_spacing(float(nozzle_dmr), float(extrusion_height));
-		double flow_mm3_per_mm = nozzle_dmr * extrusion_height;
 
         // Flags for the two special ironing modes that share inset=-1 sentinel.
         const bool is_nonplanar_mode = ironing_params.nonplanar;
@@ -1774,8 +1771,26 @@ void Layer::make_ironing()
                     unscale<double>(expoly.contour.bounding_box().center().x()),
                     unscale<double>(expoly.contour.bounding_box().center().y())
                 };
+
+                // Adaptive spacing: steep bands are narrower than the configured ironing
+                // spacing, causing the fill to produce zero lines. Cap spacing to 80% of
+                // the band width so that at least one ironing line always fits.
+                const double eff_spacing = std::min(
+                    ironing_params.line_spacing,
+                    std::max(avg_step_width_mm * 0.8, nozzle_dmr * 0.1));
+                if (eff_spacing < ironing_params.line_spacing - EPSILON) {
+                    f->spacing         = eff_spacing;
+                    f->link_max_length = (coord_t)scale_(3. * eff_spacing);
+                }
             }
             // ---- End slope detection ----
+
+            // Flow vars depend on f->spacing, which slope mode may have reduced above.
+            // Compute per-polygon so narrow slope bands get correct (lower) flow.
+            const double extrusion_height = ironing_params.height * f->spacing / nozzle_dmr;
+            const float  extrusion_width  = Flow::rounded_rectangle_extrusion_width_from_spacing(
+                float(nozzle_dmr), float(extrusion_height));
+            const double flow_mm3_per_mm  = nozzle_dmr * extrusion_height;
 
 			surface_fill.expolygon = std::move(expoly);
 			Polylines polylines;
@@ -1882,6 +1897,11 @@ void Layer::make_ironing()
 		                flow_mm3_per_mm, extrusion_width, float(extrusion_height));
                 }
 		    }
+            // Restore default spacing so the next polygon starts clean.
+            if (is_slope_mode) {
+                f->spacing         = ironing_params.line_spacing;
+                f->link_max_length = (coord_t)scale_(3. * ironing_params.line_spacing);
+            }
 		}
 
 		// Regions up to j were processed.
