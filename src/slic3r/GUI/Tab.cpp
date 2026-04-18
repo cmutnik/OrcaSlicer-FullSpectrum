@@ -2218,6 +2218,9 @@ void TabPrint::build()
         optgroup->append_single_option_line("ironing_spacing", "quality_settings_ironing#line-spacing");
         optgroup->append_single_option_line("ironing_inset", "quality_settings_ironing#inset");
         optgroup->append_single_option_line("ironing_angle", "quality_settings_ironing#angle");
+        optgroup->append_single_option_line("ironing_slope_min_angle", "quality_settings_ironing#slope-min-angle");
+        optgroup->append_single_option_line("ironing_slope_max_angle", "quality_settings_ironing#slope-max-angle");
+        optgroup->append_single_option_line("ironing_slope_zstep",     "quality_settings_ironing#slope-zstep");
 
         optgroup = page->new_optgroup(L("Wall generator"), L"param_wall_generator");
         optgroup->append_single_option_line("wall_generator", "quality_settings_wall_generator");

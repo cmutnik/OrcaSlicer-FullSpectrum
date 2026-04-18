@@ -2,12 +2,14 @@
 #include <stdio.h>
 #include <memory>
 
+#include "../AABBTreeIndirect.hpp"
 #include "../ClipperUtils.hpp"
 #include "../Geometry.hpp"
 #include "../Layer.hpp"
 #include "../Print.hpp"
 #include "../PrintConfig.hpp"
 #include "../Surface.hpp"
+#include "../TriangleMesh.hpp"
 
 #include "ExtrusionEntity.hpp"
 #include "FillBase.hpp"
@@ -1456,6 +1458,8 @@ void Layer::make_ironing()
 		InfillPattern pattern;
 		int 		extruder 	= -1;
 		bool 		just_infill = false;
+		// True when IroningType::NonPlanar — Z comes from per-point mesh raycasting.
+		bool        nonplanar   = false;
 		// Spacing of the ironing lines, also to calculate the extrusion flow from.
 		double 		line_spacing;
 		// Height of the extrusion, to calculate the extrusion flow from.
@@ -1472,6 +1476,10 @@ void Layer::make_ironing()
 			if (int(this->just_infill) < int(rhs.just_infill))
 				return true;
 			if (int(this->just_infill) > int(rhs.just_infill))
+				return false;
+			if (int(this->nonplanar) < int(rhs.nonplanar))
+				return true;
+			if (int(this->nonplanar) > int(rhs.nonplanar))
 				return false;
 			if (this->line_spacing < rhs.line_spacing)
 				return true;
@@ -1498,6 +1506,7 @@ void Layer::make_ironing()
 
 		bool operator==(const IroningParams &rhs) const {
 			return this->extruder == rhs.extruder && this->just_infill == rhs.just_infill &&
+			       this->nonplanar == rhs.nonplanar &&
 				   this->line_spacing == rhs.line_spacing && this->height == rhs.height && this->speed == rhs.speed && this->angle == rhs.angle && this->pattern == rhs.pattern && this->inset == rhs.inset;
 		}
 
@@ -1527,6 +1536,8 @@ void Layer::make_ironing()
 			const PrintRegionConfig &config = layerm->region().config();
 			if (config.ironing_type != IroningType::NoIroning &&
 			    (config.ironing_type == IroningType::AllSolid ||
+			     config.ironing_type == IroningType::SlopeSurfaces ||
+			     config.ironing_type == IroningType::NonPlanar ||
 				    ((config.top_shell_layers > 0 || (this->object()->print()->config().spiral_mode && config.bottom_shell_layers > 1)) &&
 					    (config.ironing_type == IroningType::TopSurfaces ||
 					        (config.ironing_type == IroningType::TopmostOnly && layerm->layer()->upper_layer == nullptr))))) {
@@ -1541,8 +1552,12 @@ void Layer::make_ironing()
 			if (ironing_params.extruder != -1) {
 				//TODO just_infill is currently not used.
 				ironing_params.just_infill 	= false;
+				ironing_params.nonplanar    = (config.ironing_type == IroningType::NonPlanar);
 				ironing_params.line_spacing = config.ironing_spacing;
-                ironing_params.inset 		= config.ironing_inset;
+				// Slope surface and non-planar ironing iron right to the perimeter edge so
+				// narrow step bands are fully covered; ignore the inset config for these modes.
+                ironing_params.inset 		= (config.ironing_type == IroningType::SlopeSurfaces ||
+                                               config.ironing_type == IroningType::NonPlanar) ? -1.0 : config.ironing_inset;
 				ironing_params.height 		= default_layer_height * 0.01 * config.ironing_flow;
 				ironing_params.speed 		= config.ironing_speed;
                 ironing_params.angle        = (config.ironing_angle >= 0 ? config.ironing_angle : config.infill_direction) * M_PI / 180.;
@@ -1552,6 +1567,25 @@ void Layer::make_ironing()
 			}
 		}
 	std::sort(by_extruder.begin(), by_extruder.end());
+
+    // --- Non-planar ironing: build AABB tree once for this layer ---
+    // The tree is built lazily only when at least one region requests NonPlanar mode.
+    // Vertices are transformed from object-local space into the same print-centred
+    // coordinate system that the layer polylines live in.
+    indexed_triangle_set                     nonplanar_its;
+    AABBTreeIndirect::Tree<3, float>         nonplanar_tree;
+    bool                                     nonplanar_tree_ready = false;
+
+    const bool any_nonplanar = std::any_of(by_extruder.begin(), by_extruder.end(),
+        [](const IroningParams &p) { return p.nonplanar; });
+
+    if (any_nonplanar) {
+        nonplanar_its = this->object()->model_object()->raw_indexed_triangle_set();
+        its_transform(nonplanar_its, this->object()->trafo_centered(), true);
+        nonplanar_tree = AABBTreeIndirect::build_aabb_tree_over_indexed_triangle_set(
+            nonplanar_its.vertices, nonplanar_its.indices);
+        nonplanar_tree_ready = true;
+    }
 
     FillParams 			fill_params;
     fill_params.density 	 = 1.;
@@ -1593,6 +1627,8 @@ void Layer::make_ironing()
 			for (size_t k = i; k < j; ++ k) {
 				const IroningParams		 &ironing_params  = by_extruder[k];
 				const PrintRegionConfig  &region_config   = ironing_params.layerm->region().config();
+				bool					  iron_slopes     = region_config.ironing_type == IroningType::SlopeSurfaces;
+				bool					  iron_nonplanar  = region_config.ironing_type == IroningType::NonPlanar;
 				bool					  iron_everything = region_config.ironing_type == IroningType::AllSolid;
 				bool					  iron_completely = iron_everything;
 				if (iron_everything) {
@@ -1609,6 +1645,13 @@ void Layer::make_ironing()
 					// Iron everything. This is likely only good for solid transparent objects.
 					for (const Surface &surface : ironing_params.layerm->slices.surfaces)
 						polygons_append(polys, surface.expolygon);
+				} else if (iron_slopes || iron_nonplanar) {
+					// Slope and non-planar ironing: collect all stTop surfaces.
+					// Slope mode filters by band width; non-planar mode irons everything
+					// with per-point Z from mesh raycasting.
+					for (const Surface &surface : ironing_params.layerm->slices.surfaces)
+						if (surface.surface_type == stTop)
+							polygons_append(polys, surface.expolygon);
 				} else {
 					for (const Surface &surface : ironing_params.layerm->slices.surfaces)
 						if ((surface.surface_type == stTop && (region_config.top_shell_layers > 0 || this->object()->print()->config().spiral_mode)) || (iron_everything && surface.surface_type == stBottom && region_config.bottom_shell_layers > 0))
@@ -1634,7 +1677,15 @@ void Layer::make_ironing()
 			}
 			// Trim the top surfaces with half the nozzle diameter.
             // BBS: ironing inset
-            double ironing_areas_offset = ironing_params.inset == 0 ? float(scale_(0.5 * nozzle_dmr)) : scale_(ironing_params.inset);
+            // Slope surface ironing uses inset=-1 (sentinel) meaning no inset at all — the
+            // slope step bands are already narrow so we iron right to the perimeter edge.
+            double ironing_areas_offset;
+            if (ironing_params.inset < 0)
+                ironing_areas_offset = 0;
+            else if (ironing_params.inset == 0)
+                ironing_areas_offset = float(scale_(0.5 * nozzle_dmr));
+            else
+                ironing_areas_offset = scale_(ironing_params.inset);
 			ironing_areas = intersection_ex(polys, offset(this->lslices, - ironing_areas_offset));
 		}
 
@@ -1642,11 +1693,105 @@ void Layer::make_ironing()
         f->spacing = ironing_params.line_spacing;
         f->angle = float(ironing_params.angle);
         f->link_max_length = (coord_t) scale_(3. * f->spacing);
-		double  extrusion_height = ironing_params.height * f->spacing / nozzle_dmr;
-		float  extrusion_width  = Flow::rounded_rectangle_extrusion_width_from_spacing(float(nozzle_dmr), float(extrusion_height));
-		double flow_mm3_per_mm = nozzle_dmr * extrusion_height;
+
+        // Flags for the two special ironing modes that share inset=-1 sentinel.
+        const bool is_nonplanar_mode = ironing_params.nonplanar;
+        const bool is_slope_mode     = (ironing_params.inset < 0) && !is_nonplanar_mode;
+        const PrintRegionConfig *slope_cfg = is_slope_mode
+            ? &ironing_params.layerm->region().config()
+            : nullptr;
+        // Bounding-box center of the current slope band polygon, used in Z-step
+        // ordering to distinguish inner (closer = high Z) from outer (far = low Z).
+        Vec2d slope_band_center = Vec2d::Zero();
+
         Surface surface_fill(stTop, ExPolygon());
         for (ExPolygon &expoly : ironing_areas) {
+            // ---- Slope surface ironing: per-polygon angle detection ----
+            if (is_slope_mode) {
+                // Approximate average step width using the inscribed-circle radius:
+                //   avg_step_width = 2 * area / perimeter
+                // A narrow band (step on a slope) has a small ratio; a flat top has a large one.
+                double poly_area_mm2     = unscale<double>(unscale<double>((double)expoly.area()));
+                double poly_perim_mm     = unscale<double>((double)expoly.contour.length());
+                for (const Polygon &hole : expoly.holes)
+                    poly_perim_mm += unscale<double>((double)hole.length());
+                double avg_step_width_mm = (poly_perim_mm > EPSILON)
+                    ? 2.0 * poly_area_mm2 / poly_perim_mm
+                    : 0.0;
+
+                // Skip polygons with zero or negligible step width.
+                if (avg_step_width_mm < EPSILON)
+                    continue;
+
+                // Compute the slope angle from the step width and layer height.
+                // slope_angle: angle from horizontal (0° = flat, 90° = vertical wall).
+                double slope_angle_deg = Geometry::rad2deg(std::atan(default_layer_height / avg_step_width_mm));
+
+                // Skip surfaces outside the configured angle range.
+                if (slope_angle_deg < slope_cfg->ironing_slope_min_angle.value ||
+                    slope_angle_deg > slope_cfg->ironing_slope_max_angle.value)
+                    continue;
+
+                // Orient ironing lines parallel to the slope's contour so they run
+                // *along* the slope rather than cutting across the narrow band.
+                // Use 2D PCA on the contour points to find the true principal axis —
+                // this handles curved bands (e.g. a figurine torso arc) correctly.
+                {
+                    Vec2d centroid_pts = Vec2d::Zero();
+                    for (const Point &pt : expoly.contour.points)
+                        centroid_pts += Vec2d(unscale<double>(pt.x()), unscale<double>(pt.y()));
+                    centroid_pts /= (double)expoly.contour.points.size();
+
+                    double cxx = 0, cxy = 0, cyy = 0;
+                    for (const Point &pt : expoly.contour.points) {
+                        const double dx = unscale<double>(pt.x()) - centroid_pts.x();
+                        const double dy = unscale<double>(pt.y()) - centroid_pts.y();
+                        cxx += dx * dx;
+                        cxy += dx * dy;
+                        cyy += dy * dy;
+                    }
+
+                    // Eigenvector for the larger eigenvalue of the 2x2 covariance matrix.
+                    // λ1 = (cxx+cyy)/2 + sqrt(((cxx-cyy)/2)^2 + cxy^2)
+                    // v1 = [λ1 - cyy, cxy]
+                    const double disc    = std::sqrt(0.25 * (cxx - cyy) * (cxx - cyy) + cxy * cxy);
+                    const double lambda1 = 0.5 * (cxx + cyy) + disc;
+                    double vx, vy;
+                    if (std::abs(cxy) > EPSILON) {
+                        vx = lambda1 - cyy;
+                        vy = cxy;
+                    } else {
+                        vx = (cxx >= cyy) ? 1.0 : 0.0;
+                        vy = (cxx >= cyy) ? 0.0 : 1.0;
+                    }
+                    f->angle = float(std::atan2(vy, vx));
+                }
+                // Store bounding-box center for inner/outer Z-step ordering below.
+                slope_band_center = {
+                    unscale<double>(expoly.contour.bounding_box().center().x()),
+                    unscale<double>(expoly.contour.bounding_box().center().y())
+                };
+
+                // Adaptive spacing: steep bands are narrower than the configured ironing
+                // spacing, causing the fill to produce zero lines. Cap spacing to 80% of
+                // the band width so that at least one ironing line always fits.
+                const double eff_spacing = std::min(
+                    ironing_params.line_spacing,
+                    std::max(avg_step_width_mm * 0.8, nozzle_dmr * 0.1));
+                if (eff_spacing < ironing_params.line_spacing - EPSILON) {
+                    f->spacing         = eff_spacing;
+                    f->link_max_length = (coord_t)scale_(3. * eff_spacing);
+                }
+            }
+            // ---- End slope detection ----
+
+            // Flow vars depend on f->spacing, which slope mode may have reduced above.
+            // Compute per-polygon so narrow slope bands get correct (lower) flow.
+            const double extrusion_height = ironing_params.height * f->spacing / nozzle_dmr;
+            const float  extrusion_width  = Flow::rounded_rectangle_extrusion_width_from_spacing(
+                float(nozzle_dmr), float(extrusion_height));
+            const double flow_mm3_per_mm  = nozzle_dmr * extrusion_height;
+
 			surface_fill.expolygon = std::move(expoly);
 			Polylines polylines;
 			try {
@@ -1659,11 +1804,104 @@ void Layer::make_ironing()
 		        ironing_params.layerm->fills.entities.push_back(eec = new ExtrusionEntityCollection());
 		        // Don't sort the ironing infill lines as they are monotonicly ordered.
 				eec->no_sort = true;
-		        extrusion_entities_append_paths(
-		            eec->entities, std::move(polylines),
-		            erIroning,
-		            flow_mm3_per_mm, extrusion_width, float(extrusion_height));
+
+                // --- Non-planar ironing: per-point Z from mesh raycast ---
+                // For each segment endpoint, cast a ray downward from just above print_z
+                // and use the hit Z to compute the z_ratio for that point.
+                //
+                // z_ratio formula (from GCode::_extrude):
+                //   Z = lerp(m_nominal_z - extrusion_height, m_nominal_z, z_ratio)
+                //   → z_ratio = (mesh_Z - (print_z - extrusion_height)) / extrusion_height
+                //
+                // Each polyline is split into individual 2-point ExtrusionPathSloped
+                // segments so that every endpoint gets its own independently-queried Z.
+                if (is_nonplanar_mode && nonplanar_tree_ready && extrusion_height > EPSILON) {
+                    const double ray_origin_z = this->print_z + 1.0; // 1 mm above layer top
+                    const Vec3d  ray_dir(0.0, 0.0, -1.0);
+                    const double z_base       = this->print_z - extrusion_height;
+
+                    ExtrusionPath base_path(erIroning, flow_mm3_per_mm, extrusion_width, float(extrusion_height));
+
+                    // Lambda: query mesh surface Z at a given XY (in mm).
+                    // Returns print_z as fallback if the ray misses (e.g. open mesh).
+                    auto mesh_z_at = [&](double x_mm, double y_mm) -> double {
+                        const Vec3d origin(x_mm, y_mm, ray_origin_z);
+                        igl::Hit hit;
+                        if (AABBTreeIndirect::intersect_ray_first_hit(
+                                nonplanar_its.vertices, nonplanar_its.indices,
+                                nonplanar_tree, origin, ray_dir, hit))
+                            return ray_origin_z + hit.t * ray_dir.z(); // = ray_origin_z - hit.t
+                        return this->print_z; // fallback
+                    };
+
+                    for (Polyline &pl : polylines) {
+                        for (size_t pi = 0; pi + 1 < pl.points.size(); ++pi) {
+                            const Point &p0 = pl.points[pi];
+                            const Point &p1 = pl.points[pi + 1];
+
+                            const double z0 = mesh_z_at(unscale<double>(p0.x()), unscale<double>(p0.y()));
+                            const double z1 = mesh_z_at(unscale<double>(p1.x()), unscale<double>(p1.y()));
+
+                            // Clamp z_ratio to a safe range to avoid extreme Z moves.
+                            // Theoretical range: [1 - layer_height/extrusion_height, 1.0]
+                            const double z_ratio0 = (z0 - z_base) / extrusion_height;
+                            const double z_ratio1 = (z1 - z_base) / extrusion_height;
+
+                            Polyline seg;
+                            seg.points = {p0, p1};
+                            eec->entities.push_back(new ExtrusionPathSloped(
+                                std::move(seg), base_path,
+                                {z_ratio0, 1.0},
+                                {z_ratio1, 1.0}));
+                        }
+                    }
+                // Slope Z-stepping: assign each ironing line a constant Z that varies
+                // linearly across the slope band, approximating the slope angle in GCode.
+                //
+                // z_ratio is normalised relative to the extrusion height h:
+                //   Z = lerp(m_nominal_z - h, m_nominal_z, z_ratio)
+                // To span a full layer height we extrapolate outside [0,1]:
+                //   z_ratio_min = 1 - layer_height / extrusion_height
+                } else if (is_slope_mode && slope_cfg->ironing_slope_zstep.value && extrusion_height > EPSILON) {
+                    const double z_ratio_min = 1.0 - default_layer_height / extrusion_height;
+                    const size_t n           = polylines.size();
+
+                    // Sort lines so inner edge (closer to band bbox center) gets z_ratio=1.0
+                    // and outer edge (farther from center) gets z_ratio_min.
+                    // This makes Z rise from the outer step-edge inward, following the slope.
+                    std::vector<std::pair<double, size_t>> dist_idx;
+                    dist_idx.reserve(n);
+                    for (size_t li = 0; li < n; ++li) {
+                        const Point &mid_pt = polylines[li].points[polylines[li].size() / 2];
+                        const Vec2d  mid_mm{unscale<double>(mid_pt.x()), unscale<double>(mid_pt.y())};
+                        dist_idx.emplace_back((mid_mm - slope_band_center).squaredNorm(), li);
+                    }
+                    // ascending: index 0 = innermost (smallest dist), index n-1 = outermost
+                    std::sort(dist_idx.begin(), dist_idx.end());
+
+                    ExtrusionPath base_path(erIroning, flow_mm3_per_mm, extrusion_width, float(extrusion_height));
+                    for (size_t rank = 0; rank < n; ++rank) {
+                        const size_t li = dist_idx[rank].second;
+                        // inner (rank=0) → z_ratio=1.0 (top of layer)
+                        // outer (rank=n-1) → z_ratio=z_ratio_min (bottom of step)
+                        const double t     = (n > 1) ? (double)rank / (double)(n - 1) : 0.0;
+                        const double z_rat = 1.0 - t * (1.0 - z_ratio_min);
+                        const ExtrusionPathSloped::Slope slope{z_rat, 1.0};
+                        eec->entities.push_back(
+                            new ExtrusionPathSloped(std::move(polylines[li]), base_path, slope, slope));
+                    }
+                } else {
+		            extrusion_entities_append_paths(
+		                eec->entities, std::move(polylines),
+		                erIroning,
+		                flow_mm3_per_mm, extrusion_width, float(extrusion_height));
+                }
 		    }
+            // Restore default spacing so the next polygon starts clean.
+            if (is_slope_mode) {
+                f->spacing         = ironing_params.line_spacing;
+                f->link_max_length = (coord_t)scale_(3. * ironing_params.line_spacing);
+            }
 		}
 
 		// Regions up to j were processed.
