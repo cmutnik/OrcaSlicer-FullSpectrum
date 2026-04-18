@@ -76,6 +76,10 @@ set(SLIC3R_GUI_SOURCES
     GUI/CameraPopup.hpp
     GUI/CameraUtils.cpp
     GUI/CameraUtils.hpp
+    GUI/MjpegFrameGrabber.cpp
+    GUI/MjpegFrameGrabber.hpp
+    GUI/TimelapseRecorder.cpp
+    GUI/TimelapseRecorder.hpp
     GUI/CloneDialog.cpp
     GUI/CloneDialog.hpp
     GUI/ConfigManipulation.cpp

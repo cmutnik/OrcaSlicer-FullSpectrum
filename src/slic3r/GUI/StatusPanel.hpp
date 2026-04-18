@@ -6,6 +6,7 @@
 #include "MonitorPage.hpp"
 #include "SliceInfoPanel.hpp"
 #include "CameraPopup.hpp"
+#include "TimelapseRecorder.hpp"
 #include "GUI.hpp"
 #include <wx/panel.h>
 #include <wx/bitmap.h>
@@ -425,6 +426,11 @@ protected:
     void toggle_custom_camera();
     void toggle_builtin_camera();
 
+    // External webcam timelapse bar (created in create_monitoring_page)
+    wxButton*      m_btn_timelapse_start_base{nullptr};
+    wxStaticText*  m_text_timelapse_status_base{nullptr};
+    wxBoxSizer*    m_timelapse_ctrl_sizer{nullptr};
+
 public:
     StatusBasePanel(wxWindow *      parent,
                     wxWindowID      id    = wxID_ANY,
@@ -620,6 +626,15 @@ protected:
     /* camera */
     void update_camera_state(MachineObject* obj);
     bool show_vcamera = false;
+
+    /* external webcam timelapse */
+    std::unique_ptr<TimelapseRecorder> m_timelapse_recorder;
+    int  m_last_timelapse_layer{-1};
+    bool m_timelapse_active{false};
+    wxButton*      m_btn_timelapse_start{nullptr};
+    wxStaticText*  m_text_timelapse_status{nullptr};
+    void on_timelapse_start_stop(wxCommandEvent& event);
+    void update_timelapse_on_layer_change(MachineObject* obj);
 
 public:
     void update_error_message();

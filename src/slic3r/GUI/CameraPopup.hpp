@@ -16,6 +16,8 @@
 #include "Widgets/RadioBox.hpp"
 #include "Widgets/PopupWindow.hpp"
 #include "Widgets/TextInput.hpp"
+#include <wx/radiobut.h>
+#include <wx/stdpaths.h>
 
 namespace Slic3r {
 namespace GUI {
@@ -56,6 +58,10 @@ protected:
     void on_camera_source_changed(wxCommandEvent& event);
     void handle_camera_source_change();
     void set_custom_cam_button_state(bool state);
+    void on_timelapse_switch(wxCommandEvent& event);
+    void on_timelapse_mode_changed(wxCommandEvent& event);
+    void on_timelapse_output_browse(wxCommandEvent& event);
+    void update_timelapse_interval_visibility();
 
     wxWindow *  create_item_radiobox(wxString title, wxWindow *parent, wxString tooltip, int padding_left);
     void select_curr_radiobox(int btn_idx);
@@ -89,6 +95,18 @@ private:
     wxPanel* link_underline{ nullptr };
     bool is_vcamera_show = false;
     bool allow_alter_resolution = false;
+
+    // timelapse
+    wxStaticText*  m_text_timelapse_header{nullptr};
+    SwitchButton*  m_switch_timelapse{nullptr};
+    wxRadioButton* m_rbtn_timelapse_layer{nullptr};
+    wxRadioButton* m_rbtn_timelapse_time{nullptr};
+    wxStaticText*  m_text_timelapse_interval_label{nullptr};
+    TextInput*     m_timelapse_interval_input{nullptr};
+    wxStaticText*  m_text_timelapse_output_label{nullptr};
+    TextInput*     m_timelapse_output_input{nullptr};
+    wxStaticText*  m_text_timelapse_fps_label{nullptr};
+    TextInput*     m_timelapse_fps_input{nullptr};
 
     void start_interval();
     void stop_interval(wxTimerEvent& event);

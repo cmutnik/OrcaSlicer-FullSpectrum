@@ -22,6 +22,8 @@
 #include <wx/mstream.h>
 #include <wx/sstream.h>
 #include <wx/zstream.h>
+#include <wx/stdpaths.h>
+#include <wx/filename.h>
 
 
 namespace Slic3r { namespace GUI {
@@ -1082,6 +1084,30 @@ wxBoxSizer *StatusBasePanel::create_monitoring_page()
         handle_camera_source_change();
     }
 
+    // External webcam timelapse controls — only shown when a custom camera is active
+    {
+        wxBoxSizer* tl_bar = new wxBoxSizer(wxHORIZONTAL);
+        // m_btn_timelapse_start and m_text_timelapse_status are members of StatusPanel,
+        // not StatusBasePanel, so we create them as plain locals here; StatusPanel::update()
+        // retrieves them by ID after construction. Use a simpler approach: create them here
+        // using the base class parent pointer and expose via protected ptrs added below.
+        wxButton* btn = new wxButton(this, wxID_ANY, _L("Start Timelapse"), wxDefaultPosition, wxDefaultSize, wxBU_EXACTFIT);
+        btn->SetFont(Label::Body_13);
+        wxStaticText* status_txt = new wxStaticText(this, wxID_ANY, wxEmptyString);
+        status_txt->SetFont(Label::Body_13);
+        status_txt->SetForegroundColour(wxColour(100, 100, 100));
+        tl_bar->Add(btn, 0, wxALIGN_CENTER_VERTICAL | wxLEFT, FromDIP(8));
+        tl_bar->Add(status_txt, 1, wxALIGN_CENTER_VERTICAL | wxLEFT, FromDIP(10));
+        sizer->Add(tl_bar, 0, wxEXPAND | wxTOP | wxBOTTOM, FromDIP(4));
+        // Store pointers via tag: StatusPanel will find them by walking the window tree.
+        // Simpler: expose as protected members on StatusBasePanel so StatusPanel can bind.
+        m_btn_timelapse_start_base   = btn;
+        m_text_timelapse_status_base = status_txt;
+        // Hide by default; shown when custom camera is enabled
+        tl_bar->Show(false);
+        m_timelapse_ctrl_sizer = tl_bar;
+    }
+
     return sizer;
 }
 
@@ -1626,6 +1652,95 @@ void StatusBasePanel::show_ams_group(bool show)
     m_show_ams_group = show;
 }
 
+void StatusPanel::update_timelapse_on_layer_change(MachineObject* obj)
+{
+    if (!obj || !m_timelapse_active || !m_timelapse_recorder)
+        return;
+
+    std::string mode = wxGetApp().app_config->get("camera", "timelapse_mode");
+    if (mode.empty()) mode = "layer";
+
+    if (mode == "layer" && obj->curr_layer != m_last_timelapse_layer && obj->curr_layer > 0) {
+        m_last_timelapse_layer = obj->curr_layer;
+        m_timelapse_recorder->capture_frame();
+        if (m_text_timelapse_status_base) {
+            m_text_timelapse_status_base->SetLabel(
+                wxString::Format(_L("Frame %d / Layer %d"),
+                                 m_timelapse_recorder->frame_count(),
+                                 obj->curr_layer));
+        }
+    }
+}
+
+void StatusPanel::on_timelapse_start_stop(wxCommandEvent& /*event*/)
+{
+    if (!m_timelapse_recorder)
+        return;
+
+    if (!m_timelapse_active) {
+        // --- Start ---
+        std::string snapshot_url = wxGetApp().app_config->get("camera", "custom_source");
+        if (snapshot_url.empty()) {
+            wxMessageBox(_L("No custom camera source configured.\nSet the camera URL in Camera Settings first."),
+                         _L("Timelapse"), wxOK | wxICON_WARNING, this);
+            return;
+        }
+        // Convert stream URL to snapshot URL: replace ?action=stream with ?action=snapshot
+        auto pos = snapshot_url.find("?action=stream");
+        if (pos != std::string::npos)
+            snapshot_url.replace(pos, std::string::npos, "?action=snapshot");
+        else if (snapshot_url.find("?action=snapshot") == std::string::npos)
+            snapshot_url += (snapshot_url.find('?') == std::string::npos ? "?" : "&") + std::string("action=snapshot");
+
+        std::string output_dir = wxGetApp().app_config->get("camera", "timelapse_output_dir");
+        if (output_dir.empty())
+            output_dir = wxStandardPaths::Get().GetDocumentsDir().ToStdString() + "/OrcaTimelapses";
+
+        std::string mode_str = wxGetApp().app_config->get("camera", "timelapse_mode");
+        TimelapseMode mode = (mode_str == "time") ? TimelapseMode::TimeInterval : TimelapseMode::PerLayer;
+
+        int interval = 30;
+        std::string interval_str = wxGetApp().app_config->get("camera", "timelapse_interval_secs");
+        if (!interval_str.empty()) {
+            try { interval = std::stoi(interval_str); } catch (...) {}
+        }
+
+        m_timelapse_recorder->start(snapshot_url, output_dir, mode, interval);
+        m_timelapse_active = true;
+        m_last_timelapse_layer = -1;
+
+        if (m_btn_timelapse_start_base)
+            m_btn_timelapse_start_base->SetLabel(_L("Stop Timelapse"));
+        if (m_text_timelapse_status_base)
+            m_text_timelapse_status_base->SetLabel(_L("Recording..."));
+    } else {
+        // --- Stop & assemble ---
+        int fps = 30;
+        std::string fps_str = wxGetApp().app_config->get("camera", "timelapse_fps");
+        if (!fps_str.empty()) {
+            try { fps = std::stoi(fps_str); } catch (...) {}
+        }
+
+        if (m_text_timelapse_status_base)
+            m_text_timelapse_status_base->SetLabel(_L("Assembling video..."));
+
+        std::string output = m_timelapse_recorder->stop_and_assemble(fps);
+        m_timelapse_active = false;
+
+        if (m_btn_timelapse_start_base)
+            m_btn_timelapse_start_base->SetLabel(_L("Start Timelapse"));
+
+        if (!output.empty()) {
+            if (m_text_timelapse_status_base)
+                m_text_timelapse_status_base->SetLabel(
+                    wxString::Format(_L("Saved: %s"), wxFileName(output).GetFullName()));
+        } else {
+            if (m_text_timelapse_status_base)
+                m_text_timelapse_status_base->SetLabel(_L("Done (see frame folder)"));
+        }
+    }
+}
+
 void StatusPanel::update_camera_state(MachineObject* obj)
 {
     if (!obj) return;
@@ -1804,6 +1919,19 @@ StatusPanel::StatusPanel(wxWindow *parent, wxWindowID id, const wxPoint &pos, co
     m_calibration_btn->Connect(wxEVT_COMMAND_BUTTON_CLICKED, wxCommandEventHandler(StatusPanel::on_start_calibration), NULL, this);
     m_options_btn->Connect(wxEVT_COMMAND_BUTTON_CLICKED, wxCommandEventHandler(StatusPanel::on_show_print_options), NULL, this);
     m_parts_btn->Connect(wxEVT_COMMAND_BUTTON_CLICKED, wxCommandEventHandler(StatusPanel::on_show_parts_options), NULL, this);
+
+    // External webcam timelapse
+    m_timelapse_recorder = std::make_unique<TimelapseRecorder>();
+    m_timelapse_recorder->on_assembly_failed = [this](const std::string& dir, const std::string& cmd) {
+        wxGetApp().CallAfter([this, dir, cmd] {
+            wxString msg = wxString::Format(
+                _L("ffmpeg was not found. Timelapse frames are saved in:\n%s\n\nTo assemble manually, run:\n%s"),
+                dir, cmd);
+            wxMessageBox(msg, _L("Timelapse Assembly"), wxOK | wxICON_INFORMATION, this);
+        });
+    };
+    if (m_btn_timelapse_start_base)
+        m_btn_timelapse_start_base->Bind(wxEVT_BUTTON, &StatusPanel::on_timelapse_start_stop, this);
 }
 
 StatusPanel::~StatusPanel()
@@ -3140,6 +3268,7 @@ void StatusPanel::update_subtask(MachineObject *obj)
                 m_project_task_panel->update_stage_value(obj->get_curr_stage(), obj->subtask_->task_progress);
                 m_project_task_panel->update_progress_percent(wxString::Format("%d", obj->subtask_->task_progress), "%");
                 m_project_task_panel->update_layers_num(true, wxString::Format(_L("Layer: %d/%d"), obj->curr_layer, obj->total_layers));
+                update_timelapse_on_layer_change(obj);
 
             } else {
                 m_project_task_panel->update_stage_value(obj->get_curr_stage(), 0);
@@ -3148,6 +3277,11 @@ void StatusPanel::update_subtask(MachineObject *obj)
             }
 
             if (obj->is_printing_finished()) {
+                // Auto-stop timelapse and assemble video when print completes
+                if (m_timelapse_active && m_timelapse_recorder && m_timelapse_recorder->is_recording()) {
+                    wxCommandEvent dummy;
+                    on_timelapse_start_stop(dummy);
+                }
                 obj->update_model_task();
                 m_project_task_panel->enable_abort_button(false);
                 m_project_task_panel->enable_pause_resume_button(false, "resume_disable");
@@ -4198,9 +4332,17 @@ void StatusBasePanel::handle_camera_source_change()
         m_custom_camera_view->LoadURL(new_cam_url);
         toggle_custom_camera();
         m_camera_switch_button->Show();
+        if (m_timelapse_ctrl_sizer) {
+            m_timelapse_ctrl_sizer->ShowItems(true);
+            Layout();
+        }
     } else {
         toggle_builtin_camera();
         m_camera_switch_button->Hide();
+        if (m_timelapse_ctrl_sizer) {
+            m_timelapse_ctrl_sizer->ShowItems(false);
+            Layout();
+        }
     }
 }
 

@@ -7,6 +7,7 @@
 #include <wx/progdlg.h>
 #include <wx/clipbrd.h>
 #include <wx/dcgraph.h>
+#include <wx/dirdlg.h>
 #include "GUI_App.hpp"
 #include <slic3r/GUI/StatusPanel.hpp>
 
@@ -127,6 +128,103 @@ CameraPopup::CameraPopup(wxWindow *parent)
     top_sizer->Add(m_custom_camera_input, 2, wxALIGN_CENTER_VERTICAL | wxALIGN_LEFT | wxEXPAND | wxALL, FromDIP(5));
     top_sizer->Add(m_custom_camera_input_confirm, 1, wxALIGN_CENTER_VERTICAL | wxALIGN_RIGHT | wxALL, FromDIP(5));
     main_sizer->Add(top_sizer, 0, wxALL, FromDIP(10));
+
+    // --- External Webcam Timelapse section ---
+    {
+        auto tl_divider = new wxPanel(m_panel, wxID_ANY, wxDefaultPosition, wxSize(-1, 1));
+        tl_divider->SetBackgroundColour(wxColour(200, 200, 200));
+        main_sizer->Add(tl_divider, 0, wxEXPAND | wxLEFT | wxRIGHT, FromDIP(10));
+
+        wxFlexGridSizer* tl_sizer = new wxFlexGridSizer(0, 2, 0, FromDIP(20));
+        tl_sizer->AddGrowableCol(0);
+        tl_sizer->SetFlexibleDirection(wxBOTH);
+        tl_sizer->SetNonFlexibleGrowMode(wxFLEX_GROWMODE_SPECIFIED);
+
+        // Header + enable toggle
+        m_text_timelapse_header = new wxStaticText(m_panel, wxID_ANY, _L("Ext. Webcam Timelapse"));
+        m_text_timelapse_header->SetFont(Label::Head_14);
+        m_text_timelapse_header->SetForegroundColour(TEXT_COL);
+        m_switch_timelapse = new SwitchButton(m_panel);
+        bool tl_enabled = wxGetApp().app_config->get("camera", "timelapse_enabled") == "true";
+        m_switch_timelapse->SetValue(tl_enabled);
+        tl_sizer->Add(m_text_timelapse_header, 0, wxALIGN_CENTER_VERTICAL | wxALL, FromDIP(5));
+        tl_sizer->Add(m_switch_timelapse, 0, wxALIGN_CENTER_VERTICAL | wxALIGN_RIGHT | wxALL, FromDIP(5));
+
+        // Capture mode: Per Layer
+        std::string tl_mode = wxGetApp().app_config->get("camera", "timelapse_mode");
+        if (tl_mode.empty()) tl_mode = "layer";
+        m_rbtn_timelapse_layer = new wxRadioButton(m_panel, wxID_ANY, _L("Per Layer"),
+                                                   wxDefaultPosition, wxDefaultSize, wxRB_GROUP);
+        m_rbtn_timelapse_layer->SetValue(tl_mode != "time");
+        tl_sizer->Add(m_rbtn_timelapse_layer, 0, wxALIGN_CENTER_VERTICAL | wxALL, FromDIP(5));
+        tl_sizer->Add(0, 0);
+
+        // Capture mode: Time Interval
+        m_rbtn_timelapse_time = new wxRadioButton(m_panel, wxID_ANY, _L("Time Interval"));
+        m_rbtn_timelapse_time->SetValue(tl_mode == "time");
+        tl_sizer->Add(m_rbtn_timelapse_time, 0, wxALIGN_CENTER_VERTICAL | wxALL, FromDIP(5));
+        tl_sizer->Add(0, 0);
+
+        // Interval
+        m_text_timelapse_interval_label = new wxStaticText(m_panel, wxID_ANY, _L("Interval (secs)"));
+        m_text_timelapse_interval_label->SetFont(Label::Body_14);
+        m_text_timelapse_interval_label->SetForegroundColour(TEXT_COL);
+        m_timelapse_interval_input = new TextInput(m_panel, wxEmptyString, wxEmptyString, wxEmptyString,
+                                                   wxDefaultPosition, wxSize(FromDIP(70), -1));
+        std::string tl_interval = wxGetApp().app_config->get("camera", "timelapse_interval_secs");
+        m_timelapse_interval_input->GetTextCtrl()->SetValue(tl_interval.empty() ? "30" : tl_interval);
+        tl_sizer->Add(m_text_timelapse_interval_label, 0, wxALIGN_CENTER_VERTICAL | wxALL, FromDIP(5));
+        tl_sizer->Add(m_timelapse_interval_input, 0, wxALIGN_CENTER_VERTICAL | wxALL, FromDIP(5));
+        if (tl_mode != "time") {
+            m_text_timelapse_interval_label->Hide();
+            m_timelapse_interval_input->Hide();
+        }
+
+        // Output directory
+        m_text_timelapse_output_label = new wxStaticText(m_panel, wxID_ANY, _L("Output folder"));
+        m_text_timelapse_output_label->SetFont(Label::Body_14);
+        m_text_timelapse_output_label->SetForegroundColour(TEXT_COL);
+        std::string tl_output = wxGetApp().app_config->get("camera", "timelapse_output_dir");
+        if (tl_output.empty())
+            tl_output = wxStandardPaths::Get().GetDocumentsDir().ToStdString() + "/OrcaTimelapses";
+        m_timelapse_output_input = new TextInput(m_panel, wxEmptyString, wxEmptyString, wxEmptyString,
+                                                  wxDefaultPosition, wxSize(FromDIP(140), -1));
+        m_timelapse_output_input->GetTextCtrl()->SetValue(tl_output);
+        tl_sizer->Add(m_text_timelapse_output_label, 0, wxALIGN_CENTER_VERTICAL | wxALL, FromDIP(5));
+        tl_sizer->Add(m_timelapse_output_input, 0, wxALIGN_CENTER_VERTICAL | wxALL, FromDIP(5));
+
+        // FPS
+        m_text_timelapse_fps_label = new wxStaticText(m_panel, wxID_ANY, _L("Video FPS"));
+        m_text_timelapse_fps_label->SetFont(Label::Body_14);
+        m_text_timelapse_fps_label->SetForegroundColour(TEXT_COL);
+        m_timelapse_fps_input = new TextInput(m_panel, wxEmptyString, wxEmptyString, wxEmptyString,
+                                               wxDefaultPosition, wxSize(FromDIP(70), -1));
+        std::string tl_fps = wxGetApp().app_config->get("camera", "timelapse_fps");
+        m_timelapse_fps_input->GetTextCtrl()->SetValue(tl_fps.empty() ? "30" : tl_fps);
+        tl_sizer->Add(m_text_timelapse_fps_label, 0, wxALIGN_CENTER_VERTICAL | wxALL, FromDIP(5));
+        tl_sizer->Add(m_timelapse_fps_input, 0, wxALIGN_CENTER_VERTICAL | wxALL, FromDIP(5));
+
+        main_sizer->Add(tl_sizer, 0, wxALL | wxEXPAND, FromDIP(10));
+
+        // Event bindings
+        m_switch_timelapse->Bind(wxEVT_TOGGLEBUTTON, &CameraPopup::on_timelapse_switch, this);
+        m_rbtn_timelapse_layer->Bind(wxEVT_RADIOBUTTON, &CameraPopup::on_timelapse_mode_changed, this);
+        m_rbtn_timelapse_time->Bind(wxEVT_RADIOBUTTON, &CameraPopup::on_timelapse_mode_changed, this);
+
+        // Save output/fps on text change
+        m_timelapse_output_input->GetTextCtrl()->Bind(wxEVT_TEXT, [this](wxCommandEvent&) {
+            wxGetApp().app_config->set("camera", "timelapse_output_dir",
+                m_timelapse_output_input->GetTextCtrl()->GetValue().ToStdString());
+        });
+        m_timelapse_fps_input->GetTextCtrl()->Bind(wxEVT_TEXT, [this](wxCommandEvent&) {
+            wxGetApp().app_config->set("camera", "timelapse_fps",
+                m_timelapse_fps_input->GetTextCtrl()->GetValue().ToStdString());
+        });
+        m_timelapse_interval_input->GetTextCtrl()->Bind(wxEVT_TEXT, [this](wxCommandEvent&) {
+            wxGetApp().app_config->set("camera", "timelapse_interval_secs",
+                m_timelapse_interval_input->GetTextCtrl()->GetValue().ToStdString());
+        });
+    }
 
     auto url = wxString::Format(L"https://wiki.bambulab.com/%s/software/bambu-studio/virtual-camera", L"en");
     auto text = _L("Show \"Live Video\" guide page.");
@@ -525,6 +623,42 @@ void CameraPopup::OnKillFocus(wxFocusEvent &event)
 
 void CameraPopup::OnMouse(wxMouseEvent &event)
 {
+    event.Skip();
+}
+
+void CameraPopup::on_timelapse_switch(wxCommandEvent& event)
+{
+    bool enabled = m_switch_timelapse->GetValue();
+    wxGetApp().app_config->set("camera", "timelapse_enabled", enabled ? "true" : "false");
+    event.Skip();
+}
+
+void CameraPopup::on_timelapse_mode_changed(wxCommandEvent& event)
+{
+    bool time_mode = m_rbtn_timelapse_time->GetValue();
+    wxGetApp().app_config->set("camera", "timelapse_mode", time_mode ? "time" : "layer");
+    update_timelapse_interval_visibility();
+    event.Skip();
+}
+
+void CameraPopup::update_timelapse_interval_visibility()
+{
+    bool time_mode = m_rbtn_timelapse_time->GetValue();
+    m_text_timelapse_interval_label->Show(time_mode);
+    m_timelapse_interval_input->Show(time_mode);
+    rescale();
+}
+
+void CameraPopup::on_timelapse_output_browse(wxCommandEvent& event)
+{
+    wxDirDialog dlg(this, _L("Choose timelapse output folder"),
+                    m_timelapse_output_input->GetTextCtrl()->GetValue(),
+                    wxDD_DEFAULT_STYLE | wxDD_DIR_MUST_EXIST);
+    if (dlg.ShowModal() == wxID_OK) {
+        std::string path = dlg.GetPath().ToStdString();
+        m_timelapse_output_input->GetTextCtrl()->SetValue(path);
+        wxGetApp().app_config->set("camera", "timelapse_output_dir", path);
+    }
     event.Skip();
 }
 
