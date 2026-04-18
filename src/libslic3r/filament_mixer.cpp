@@ -4,6 +4,7 @@
 #include <cmath>
 
 #include "filament_mixer_model.h"
+#include "kubelka_munk.h"
 
 namespace Slic3r {
 namespace {
@@ -76,6 +77,14 @@ void filament_mixer_lerp_linear_float(float r1, float g1, float b1,
     *out_r = srgb_to_linear(clamp01(out_sr));
     *out_g = srgb_to_linear(clamp01(out_sg));
     *out_b = srgb_to_linear(clamp01(out_sb));
+}
+
+void kubelka_munk_lerp(unsigned char r1, unsigned char g1, unsigned char b1,
+                       unsigned char r2, unsigned char g2, unsigned char b2,
+                       float t,
+                       unsigned char* out_r, unsigned char* out_g, unsigned char* out_b)
+{
+    kubelka_munk::lerp(r1, g1, b1, r2, g2, b2, t, out_r, out_g, out_b);
 }
 
 } // namespace Slic3r
