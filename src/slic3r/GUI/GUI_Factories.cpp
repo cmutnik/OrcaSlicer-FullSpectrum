@@ -1377,6 +1377,8 @@ void MenuFactory::create_extra_object_menu()
     append_menu_item_per_object_process(&m_object_menu);
     // Enter per object parameters
     append_menu_item_per_object_settings(&m_object_menu);
+    // Spectrum color painting
+    append_menu_item_spectrum_color(&m_object_menu);
     m_object_menu.AppendSeparator();
     append_menu_item_reload_from_disk(&m_object_menu);
     append_menu_item_replace_with_stl(&m_object_menu);
@@ -2027,6 +2029,14 @@ void MenuFactory::append_menu_item_change_filament(wxMenu* menu)
             [is_active_extruder]() { return !is_active_extruder; }, m_parent);
     }
     menu->Append(wxID_ANY, name, extruder_selection_menu, _L("Change Filament"));
+}
+
+void MenuFactory::append_menu_item_spectrum_color(wxMenu* menu)
+{
+    append_menu_item(menu, wxID_ANY, _L("Apply Spectrum Color"), _L("Paint the model with cycling filament colors from bottom to top"),
+        [](wxCommandEvent&) { plater()->apply_spectrum_color(); },
+        "", menu,
+        []() { return plater()->can_apply_spectrum_color(); }, m_parent);
 }
 
 void MenuFactory::append_menu_item_set_printable(wxMenu* menu)

@@ -84,6 +84,7 @@
 #include "libslic3r/Utils.hpp"
 #include "libslic3r/PresetBundle.hpp"
 #include "libslic3r/ClipperUtils.hpp"
+#include "libslic3r/TriangleSelector.hpp"
 
 // For stl export
 #include "libslic3r/CSGMesh/ModelToCSGMesh.hpp"
@@ -9265,6 +9266,8 @@ struct Plater::priv
     bool can_reload_from_disk() const;
     //BBS:
     bool can_fillcolor() const;
+    bool can_apply_spectrum_color() const;
+    void apply_spectrum_color();
     bool has_assemble_view() const;
     bool can_replace_with_stl() const;
     bool can_split(bool to_objects) const;
@@ -14976,6 +14979,76 @@ bool Plater::priv::can_fillcolor() const
 {
     //BBS TODO
     return true;
+}
+
+bool Plater::priv::can_apply_spectrum_color() const
+{
+    if (get_selected_object_idx() < 0)
+        return false;
+    auto* c = wxGetApp().preset_bundle->project_config.option<ConfigOptionStrings>("filament_colour");
+    return c && c->values.size() >= 2;
+}
+
+void Plater::priv::apply_spectrum_color()
+{
+    int obj_idx = get_selected_object_idx();
+    if (obj_idx < 0)
+        return;
+
+    // Build ordered list of 1-based filament IDs: physical first, then enabled mixed.
+    auto* color_opt = wxGetApp().preset_bundle->project_config.option<ConfigOptionStrings>("filament_colour");
+    if (!color_opt || color_opt->values.empty())
+        return;
+    const size_t num_physical = color_opt->values.size();
+
+    std::vector<unsigned int> filament_ids;
+    filament_ids.reserve(num_physical + 8);
+    for (unsigned int i = 1; i <= (unsigned int)num_physical; ++i)
+        filament_ids.push_back(i);
+
+    unsigned int next_virtual = (unsigned int)num_physical + 1;
+    for (const MixedFilament& mf : wxGetApp().preset_bundle->mixed_filaments.mixed_filaments()) {
+        if (!mf.enabled || mf.deleted)
+            continue;
+        filament_ids.push_back(next_virtual++);
+    }
+
+    const size_t num_colors = filament_ids.size();
+    if (num_colors < 2)
+        return;
+
+    Plater::TakeSnapshot snapshot(q, "Apply Spectrum Color");
+
+    ModelObject* obj = model.objects[obj_idx];
+    const BoundingBoxf3 bb = obj->bounding_box_approx();
+    const double z_min   = bb.min.z();
+    const double z_range = bb.max.z() - z_min;
+
+    for (ModelVolume* mv : obj->volumes) {
+        if (!mv->is_model_part())
+            continue;
+
+        const TriangleMesh& tmesh = mv->mesh();
+        const indexed_triangle_set& its = tmesh.its;
+        TriangleSelector selector(tmesh);
+        const Transform3d vol_tf = mv->get_matrix();
+
+        for (int i = 0; i < (int)its.indices.size(); ++i) {
+            const auto& tri = its.indices[i];
+            const Vec3d c = (  vol_tf * its.vertices[tri(0)].cast<double>()
+                             + vol_tf * its.vertices[tri(1)].cast<double>()
+                             + vol_tf * its.vertices[tri(2)].cast<double>()) / 3.0;
+            const double t = (z_range > 0.0)
+                ? std::clamp((c.z() - z_min) / z_range, 0.0, 1.0)
+                : 0.0;
+            const int band = std::min((int)(t * (double)num_colors), (int)num_colors - 1);
+            selector.set_facet(i, EnforcerBlockerType(filament_ids[band]));
+        }
+        mv->mmu_segmentation_facets.set(selector);
+    }
+
+    q->get_partplate_list().notify_instance_update(obj_idx, 0);
+    schedule_background_process();
 }
 
 bool Plater::priv::has_assemble_view() const
@@ -21939,6 +22012,8 @@ bool Plater::can_redo() const { return IsShown() && p->is_view3D_shown() && p->u
 bool Plater::can_reload_from_disk() const { return p->can_reload_from_disk(); }
 //BBS
 bool Plater::can_fillcolor() const { return p->can_fillcolor(); }
+bool Plater::can_apply_spectrum_color() const { return p->can_apply_spectrum_color(); }
+void Plater::apply_spectrum_color() { p->apply_spectrum_color(); }
 bool Plater::has_assmeble_view() const { return p->has_assemble_view(); }
 bool Plater::can_replace_with_stl() const { return p->can_replace_with_stl(); }
 bool Plater::can_mirror() const { return p->can_mirror(); }

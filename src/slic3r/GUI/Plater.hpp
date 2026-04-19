@@ -602,6 +602,8 @@ public:
 
     //BBS:
     bool can_fillcolor() const;
+    bool can_apply_spectrum_color() const;
+    void apply_spectrum_color();
     bool has_assmeble_view() const;
 
     void msw_rescale();
