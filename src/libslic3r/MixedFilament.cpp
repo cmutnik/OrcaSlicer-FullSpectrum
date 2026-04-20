@@ -891,6 +891,7 @@ void MixedFilamentManager::auto_generate(const std::vector<std::string> &filamen
                     mf.enabled = false;
             }
             mf.stable_id = normalize_stable_id(mf.stable_id);
+            mf.distribution_mode = int(MixedFilament::SameLayerPointillisme);
             m_mixed.push_back(mf);
         }
     }
@@ -948,7 +949,7 @@ void MixedFilamentManager::add_custom_filament(unsigned int component_a,
     mf.gradient_component_ids.clear();
     mf.gradient_component_weights.clear();
     mf.pointillism_all_filaments = false;
-    mf.distribution_mode = int(MixedFilament::SameLayerPointillisme);
+    mf.distribution_mode = int(MixedFilament::SameLayerPointillisme); // import-created entries use stripe mode
     mf.enabled = true;
     mf.deleted = false;
     mf.custom = true;
