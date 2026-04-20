@@ -45,7 +45,23 @@ static void apply_tolerance(ModelVolume* vol)
     vol->set_offset(vol->get_offset() + rot_norm * z_offset);
 }
 
-static void add_cut_volume(TriangleMesh& mesh, ModelObject* object, const ModelVolume* src_volume, const Transform3d& cut_matrix, const std::string& suffix = {}, ModelVolumeType type = ModelVolumeType::MODEL_PART)
+static void transfer_painting(const FacetsAnnotation& src, FacetsAnnotation& dst, const std::vector<int>& face_map)
+{
+    if (src.empty()) return;
+    int n = static_cast<int>(face_map.size());
+    dst.reserve(n);
+    for (int new_idx = 0; new_idx < n; ++new_idx) {
+        int src_idx = face_map[new_idx];
+        if (src_idx >= 0) {
+            std::string state = src.get_triangle_as_string(src_idx);
+            if (!state.empty())
+                dst.set_triangle_from_string(new_idx, state);
+        }
+    }
+    dst.shrink_to_fit();
+}
+
+static void add_cut_volume(TriangleMesh& mesh, ModelObject* object, const ModelVolume* src_volume, const Transform3d& cut_matrix, const std::string& suffix = {}, ModelVolumeType type = ModelVolumeType::MODEL_PART, const std::vector<int>* face_map = nullptr)
 {
     if (mesh.empty())
         return;
@@ -61,10 +77,18 @@ static void add_cut_volume(TriangleMesh& mesh, ModelObject* object, const ModelV
     assert(vol->config.id() != src_volume->config.id());
     vol->set_material(src_volume->material_id(), *src_volume->material());
     vol->cut_info = src_volume->cut_info;
+
+    if (face_map) {
+        transfer_painting(src_volume->supported_facets,        vol->supported_facets,        *face_map);
+        transfer_painting(src_volume->seam_facets,             vol->seam_facets,             *face_map);
+        transfer_painting(src_volume->mmu_segmentation_facets, vol->mmu_segmentation_facets, *face_map);
+        transfer_painting(src_volume->fuzzy_skin_facets,       vol->fuzzy_skin_facets,       *face_map);
+    }
 }
 
 static void process_volume_cut( ModelVolume* volume, const Transform3d& instance_matrix, const Transform3d& cut_matrix,
-                                ModelObjectCutAttributes attributes, TriangleMesh& upper_mesh, TriangleMesh& lower_mesh)
+                                ModelObjectCutAttributes attributes, TriangleMesh& upper_mesh, TriangleMesh& lower_mesh,
+                                std::vector<int>* upper_face_map = nullptr, std::vector<int>* lower_face_map = nullptr)
 {
     const auto volume_matrix = volume->get_matrix();
 
@@ -77,7 +101,7 @@ static void process_volume_cut( ModelVolume* volume, const Transform3d& instance
     mesh.transform(invert_cut_matrix * instance_matrix * volume_matrix, true);
 
     indexed_triangle_set upper_its, lower_its;
-    cut_mesh(mesh.its, 0.0f, &upper_its, &lower_its);
+    cut_mesh(mesh.its, 0.0f, &upper_its, &lower_its, true, upper_face_map, lower_face_map);
     if (attributes.has(ModelObjectCutAttribute::KeepUpper))
         upper_mesh = TriangleMesh(upper_its);
     if (attributes.has(ModelObjectCutAttribute::KeepLower))
@@ -181,26 +205,28 @@ static void process_modifier_cut(ModelVolume* volume, const Transform3d& instanc
 static void process_solid_part_cut(ModelVolume* volume, const Transform3d& instance_matrix, const Transform3d& cut_matrix,
                             ModelObjectCutAttributes attributes, ModelObject* upper, ModelObject* lower)
 {
-    // Perform cut
+    // Perform cut, collecting face-source maps so painting can be transferred to the new volumes.
     TriangleMesh upper_mesh, lower_mesh;
-    process_volume_cut(volume, instance_matrix, cut_matrix, attributes, upper_mesh, lower_mesh);
+    std::vector<int> upper_face_map, lower_face_map;
+    process_volume_cut(volume, instance_matrix, cut_matrix, attributes, upper_mesh, lower_mesh,
+                       &upper_face_map, &lower_face_map);
 
     // Add required cut parts to the objects
 
     if (attributes.has(ModelObjectCutAttribute::KeepAsParts)) {
-        add_cut_volume(upper_mesh, upper, volume, cut_matrix, "_A");
+        add_cut_volume(upper_mesh, upper, volume, cut_matrix, "_A", ModelVolumeType::MODEL_PART, &upper_face_map);
         if (!lower_mesh.empty()) {
-            add_cut_volume(lower_mesh, upper, volume, cut_matrix, "_B");
+            add_cut_volume(lower_mesh, upper, volume, cut_matrix, "_B", ModelVolumeType::MODEL_PART, &lower_face_map);
             upper->volumes.back()->cut_info.is_from_upper = false;
         }
         return;
     }
 
     if (attributes.has(ModelObjectCutAttribute::KeepUpper))
-        add_cut_volume(upper_mesh, upper, volume, cut_matrix);
+        add_cut_volume(upper_mesh, upper, volume, cut_matrix, {}, ModelVolumeType::MODEL_PART, &upper_face_map);
 
     if (attributes.has(ModelObjectCutAttribute::KeepLower) && !lower_mesh.empty())
-        add_cut_volume(lower_mesh, lower, volume, cut_matrix);
+        add_cut_volume(lower_mesh, lower, volume, cut_matrix, {}, ModelVolumeType::MODEL_PART, &lower_face_map);
 }
 
 static void reset_instance_transformation(ModelObject* object, size_t src_instance_idx, 
@@ -321,8 +347,6 @@ const ModelObjectPtrs& Cut::perform_with_plane()
     const Transform3d       inverse_cut_matrix = cut_transformation.get_rotation_matrix().inverse() * translation_transform(-1. * cut_transformation.get_offset());
 
     for (ModelVolume* volume : mo->volumes) {
-        volume->reset_extra_facets();
-
         if (!volume->is_model_part()) {
             if (volume->cut_info.is_processed)
                 process_modifier_cut(volume, instance_matrix, inverse_cut_matrix, m_attributes, upper, lower);

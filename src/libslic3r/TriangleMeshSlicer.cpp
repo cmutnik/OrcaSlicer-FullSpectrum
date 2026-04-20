@@ -2320,7 +2320,7 @@ Polygons project_mesh(
     return union_(top.front(), bottom.back());
 }
 
-void cut_mesh(const indexed_triangle_set& mesh, float z, indexed_triangle_set* upper, indexed_triangle_set* lower, bool triangulate_caps)
+void cut_mesh(const indexed_triangle_set& mesh, float z, indexed_triangle_set* upper, indexed_triangle_set* lower, bool triangulate_caps, std::vector<int>* upper_face_map, std::vector<int>* lower_face_map)
 {
     assert(upper || lower);
     if (upper == nullptr && lower == nullptr)
@@ -2395,12 +2395,16 @@ void cut_mesh(const indexed_triangle_set& mesh, float z, indexed_triangle_set* u
 
         if (min_z > z || (is_equal(min_z , z) && max_z > z)) {
             // facet is above the cut plane and does not belong to it
-            if (upper != nullptr)
+            if (upper != nullptr) {
                 upper->indices.emplace_back(facet);
+                if (upper_face_map) upper_face_map->push_back(facet_idx);
+            }
         } else if (max_z < z || (is_equal(max_z, z) && min_z < z)) {
             // facet is below the cut plane and does not belong to it
-            if (lower != nullptr)
+            if (lower != nullptr) {
                 lower->indices.emplace_back(facet);
+                if (lower_face_map) lower_face_map->push_back(facet_idx);
+            }
         } else if (min_z < z && max_z > z) {
             // Facet is cut by the slicing plane.
             assert(slice_type == FacetSliceType::Slicing);
@@ -2502,8 +2506,12 @@ void cut_mesh(const indexed_triangle_set& mesh, float z, indexed_triangle_set* u
             bool is_new_vertex_v2v0;
             auto [iv0v1_upper, iv0v1_lower] = new_vertex(v1, iv1, v0, iv0, v2, iv2, v0v1, is_new_vertex_v0v1);
             auto [iv2v0_upper, iv2v0_lower] = new_vertex(v2, iv2, v0, iv0, v1, iv1, v2v0, is_new_vertex_v2v0);
-            auto new_face                   = [](indexed_triangle_set *its, int i, int j, int k) {
-                if (its != nullptr && i != j && i != k && j != k) its->indices.emplace_back(i, j, k);
+            auto new_face = [upper, lower, upper_face_map, lower_face_map, &facet_idx](indexed_triangle_set *its, int i, int j, int k) {
+                if (its != nullptr && i != j && i != k && j != k) {
+                    its->indices.emplace_back(i, j, k);
+                    if (its == upper && upper_face_map) upper_face_map->push_back(facet_idx);
+                    else if (its == lower && lower_face_map) lower_face_map->push_back(facet_idx);
+                }
             };
             if (is_new_vertex_v0v1 && is_new_vertex_v2v0) {
                 if (v0.z() > z) {
@@ -2537,6 +2545,10 @@ void cut_mesh(const indexed_triangle_set& mesh, float z, indexed_triangle_set* u
 
     if (upper != nullptr) {
         triangulate_slice(*upper, upper_lines, upper_slice_vertices, int(mesh.vertices.size()), z, triangulate_caps, NORMALS_DOWN, section_vertices_map);
+        if (upper_face_map) {
+            while (upper_face_map->size() < upper->indices.size())
+                upper_face_map->push_back(-1);
+        }
 #ifndef NDEBUG
         if (triangulate_caps) {
             size_t num_open_edges_new = its_num_open_edges(*upper);
@@ -2547,6 +2559,10 @@ void cut_mesh(const indexed_triangle_set& mesh, float z, indexed_triangle_set* u
 
     if (lower != nullptr) {
         triangulate_slice(*lower, lower_lines, lower_slice_vertices, int(mesh.vertices.size()), z, triangulate_caps, NORMALS_UP, section_vertices_map);
+        if (lower_face_map) {
+            while (lower_face_map->size() < lower->indices.size())
+                lower_face_map->push_back(-1);
+        }
 #ifndef NDEBUG
         if (triangulate_caps) {
             size_t num_open_edges_new = its_num_open_edges(*lower);
