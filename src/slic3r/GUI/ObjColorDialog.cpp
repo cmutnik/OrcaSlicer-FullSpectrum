@@ -619,15 +619,27 @@ std::string ObjColorPanel::get_color_str(const wxColour &color) {
 
 ComboBox *ObjColorPanel::CreateEditorCtrl(wxWindow *parent, int id) // wxRect labelRect,, const wxVariant &value
 {
-    std::vector<wxBitmap *> icons = get_extruder_color_icons();
-    const double            em          = Slic3r::GUI::wxGetApp().em_unit();
-    bool                    thin_icon   = false;
-    const int               icon_width  = lround((thin_icon ? 2 : 4.4) * em);
-    const int               icon_height = lround(2 * em);
-    m_combox_icon_width                 = icon_width;
-    m_combox_icon_height                = icon_height;
-    wxColour undefined_color(0,255,0,255);
-    icons.insert(icons.begin(), get_extruder_color_icon(undefined_color.GetAsString(wxC2S_HTML_SYNTAX).ToStdString(), std::to_string(-1), icon_width, icon_height));
+    const double em          = Slic3r::GUI::wxGetApp().em_unit();
+    bool         thin_icon   = false;
+    const int    icon_width  = lround((thin_icon ? 2 : 4.4) * em);
+    const int    icon_height = lround(2 * em);
+    m_combox_icon_width  = icon_width;
+    m_combox_icon_height = icon_height;
+
+    // Build icons from m_colours so the list length always matches m_colours.
+    // get_extruder_color_icons() includes mixed filaments and would cause an
+    // out-of-bounds access on m_colours[i-1] when the loop reaches those entries.
+    std::vector<wxBitmap *> icons;
+    icons.reserve(m_colours.size());
+    for (size_t i = 0; i < m_colours.size(); ++i)
+        icons.push_back(get_extruder_color_icon(
+            m_colours[i].GetAsString(wxC2S_HTML_SYNTAX).ToStdString(),
+            std::to_string(i + 1), icon_width, icon_height));
+
+    wxColour undefined_color(0, 255, 0, 255);
+    icons.insert(icons.begin(), get_extruder_color_icon(
+        undefined_color.GetAsString(wxC2S_HTML_SYNTAX).ToStdString(),
+        std::to_string(-1), icon_width, icon_height));
     if (icons.empty())
         return nullptr;
 
