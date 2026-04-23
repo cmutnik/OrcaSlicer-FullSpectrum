@@ -431,9 +431,14 @@ static void merge_solid_parts_inside_object(ModelObjectPtrs& objects)
 {
     for (ModelObject* mo : objects) {
         TriangleMesh mesh;
-        // Merge all SolidPart but not Connectors
+        std::vector<const ModelVolume*> src_volumes;
+        std::vector<int>                face_offsets;
+
+        // Merge all SolidPart but not Connectors, tracking face offsets for painting transfer
         for (const ModelVolume* mv : mo->volumes) {
             if (mv->is_model_part() && !mv->is_cut_connector()) {
+                face_offsets.push_back((int)mesh.its.indices.size());
+                src_volumes.push_back(mv);
                 TriangleMesh m = mv->mesh();
                 m.transform(mv->get_matrix());
                 mesh.merge(m);
@@ -442,6 +447,47 @@ static void merge_solid_parts_inside_object(ModelObjectPtrs& objects)
         if (!mesh.empty()) {
             ModelVolume* new_volume = mo->add_volume(mesh);
             new_volume->name = mo->name;
+
+            // Re-map painting annotations from each source volume into the merged volume.
+            // Each source volume's faces occupy a contiguous range in the merged mesh
+            // starting at its recorded face_offset.
+            const int total_faces = (int)mesh.its.indices.size();
+            auto transfer_merged_painting = [&](auto src_getter, auto dst_getter) {
+                bool has_any = false;
+                for (const ModelVolume* src : src_volumes)
+                    if (!src_getter(src).empty()) { has_any = true; break; }
+                if (!has_any) return;
+                auto& dst = dst_getter(new_volume);
+                dst.reserve(total_faces);
+                for (size_t vi = 0; vi < src_volumes.size(); ++vi) {
+                    const FacetsAnnotation& src_ann = src_getter(src_volumes[vi]);
+                    if (src_ann.empty()) continue;
+                    const int offset     = face_offsets[vi];
+                    const int face_count = (vi + 1 < src_volumes.size())
+                        ? face_offsets[vi + 1] - offset
+                        : total_faces - offset;
+                    for (int j = 0; j < face_count; ++j) {
+                        std::string state = src_ann.get_triangle_as_string(j);
+                        if (!state.empty())
+                            dst.set_triangle_from_string(offset + j, state);
+                    }
+                }
+                dst.shrink_to_fit();
+            };
+
+            transfer_merged_painting(
+                [](const ModelVolume* v) -> const FacetsAnnotation& { return v->supported_facets; },
+                [](ModelVolume* v)       ->       FacetsAnnotation& { return v->supported_facets; });
+            transfer_merged_painting(
+                [](const ModelVolume* v) -> const FacetsAnnotation& { return v->seam_facets; },
+                [](ModelVolume* v)       ->       FacetsAnnotation& { return v->seam_facets; });
+            transfer_merged_painting(
+                [](const ModelVolume* v) -> const FacetsAnnotation& { return v->mmu_segmentation_facets; },
+                [](ModelVolume* v)       ->       FacetsAnnotation& { return v->mmu_segmentation_facets; });
+            transfer_merged_painting(
+                [](const ModelVolume* v) -> const FacetsAnnotation& { return v->fuzzy_skin_facets; },
+                [](ModelVolume* v)       ->       FacetsAnnotation& { return v->fuzzy_skin_facets; });
+
             // Delete all merged SolidPart but not Connectors
             for (int i = int(mo->volumes.size()) - 2; i >= 0; --i) {
                 const ModelVolume* mv = mo->volumes[i];
