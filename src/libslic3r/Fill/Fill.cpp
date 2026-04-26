@@ -1582,6 +1582,8 @@ void Layer::make_ironing()
 		// Create the ironing extrusions for regions <i, j)
 		ExPolygons ironing_areas;
 		double nozzle_dmr = this->object()->print()->config().nozzle_diameter.get_at(ironing_params.extruder - 1);
+        // BBS: ironing inset — hoisted so enforcer/blocker logic can reuse it
+        double ironing_areas_offset = ironing_params.inset == 0 ? float(scale_(0.5 * nozzle_dmr)) : scale_(ironing_params.inset);
 		if (ironing_params.just_infill) {
 			//TODO just_infill is currently not used.
 			// Just infill.
@@ -1632,11 +1634,18 @@ void Layer::make_ironing()
 					append(polys, std::move(infills));
 				polys = union_safety_offset(polys);
 			}
-			// Trim the top surfaces with half the nozzle diameter.
-            // BBS: ironing inset
-            double ironing_areas_offset = ironing_params.inset == 0 ? float(scale_(0.5 * nozzle_dmr)) : scale_(ironing_params.inset);
 			ironing_areas = intersection_ex(polys, offset(this->lslices, - ironing_areas_offset));
 		}
+
+        // Apply painted ironing enforcers and blockers.
+        if (!this->m_ironing_blockers.empty())
+            ironing_areas = diff_ex(ironing_areas, this->m_ironing_blockers);
+        if (!this->m_ironing_enforcers.empty()) {
+            ExPolygons enforcer_areas = intersection_ex(
+                this->m_ironing_enforcers,
+                offset(this->lslices, -ironing_areas_offset));
+            ironing_areas = union_ex(ironing_areas, enforcer_areas);
+        }
 
         // Create the filler object.
         f->spacing = ironing_params.line_spacing;

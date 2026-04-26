@@ -2565,6 +2565,13 @@ void ObjectList::del_info_item(const int obj_idx, InfoItemType type)
             mv->fuzzy_skin_facets.reset();
         break;
 
+    case InfoItemType::Ironing:
+        cnv->get_gizmos_manager().reset_all_states();
+        Plater::TakeSnapshot(plater, _u8L("Remove paint-on ironing"));
+        for (ModelVolume* mv : (*m_objects)[obj_idx]->volumes)
+            mv->ironing_facets.reset();
+        break;
+
     // BBS: remove Sinking
     case InfoItemType::Undef : assert(false); break;
     }
@@ -3496,10 +3503,12 @@ void ObjectList::part_selection_changed()
                     //case InfoItemType::CustomSeam:
                     case InfoItemType::MmSegmentation:
                     case InfoItemType::FuzzySkin:
+                    case InfoItemType::Ironing:
                     {
                         GLGizmosManager::EType gizmo_type = info_type == InfoItemType::CustomSupports ? GLGizmosManager::EType::FdmSupports :
                                                             /*info_type == InfoItemType::CustomSeam ? GLGizmosManager::EType::Seam :*/
                                                             info_type == InfoItemType::FuzzySkin        ? GLGizmosManager::EType::FuzzySkin :
+                                                            info_type == InfoItemType::Ironing          ? GLGizmosManager::EType::Ironing :
                                                             GLGizmosManager::EType::MmSegmentation;
                         GLGizmosManager& gizmos_mgr = wxGetApp().plater()->get_view3D_canvas3D()->get_gizmos_manager();
                         if (gizmos_mgr.get_current_type() != gizmo_type)

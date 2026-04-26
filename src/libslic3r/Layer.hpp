@@ -157,6 +157,13 @@ public:
     // BBS
     ExPolygons              loverhangs;
     BoundingBox             loverhangs_bbox;
+
+    // Painted ironing regions projected from ModelVolume::ironing_facets.
+    // Enforcers: faces that must be ironed regardless of ironing_type setting.
+    // Blockers:  faces that must not be ironed regardless of ironing_type setting.
+    Polygons                m_ironing_enforcers;
+    Polygons                m_ironing_blockers;
+
     size_t                  region_count() const { return m_regions.size(); }
     const LayerRegion*      get_region(int idx) const { return m_regions[idx]; }
     LayerRegion*            get_region(int idx) { return m_regions[idx]; }

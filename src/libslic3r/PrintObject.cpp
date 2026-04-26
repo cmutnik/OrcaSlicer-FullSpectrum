@@ -565,10 +565,41 @@ void PrintObject::infill()
     }
 }
 
+// Forward declaration — defined later in this file alongside project_and_append_custom_facets.
+static void project_triangles_to_slabs(ConstLayerPtrsAdaptor layers, const indexed_triangle_set &custom_facets, const Transform3f &tr, bool seam, std::vector<Polygons> &out);
+
 void PrintObject::ironing()
 {
     if (this->set_started(posIroning)) {
         BOOST_LOG_TRIVIAL(debug) << "Ironing in parallel - start";
+
+        // Project painted ironing enforcers and blockers onto per-layer polygons.
+        {
+            std::vector<Polygons> ironing_enforcers(m_layers.size());
+            std::vector<Polygons> ironing_blockers(m_layers.size());
+            for (const ModelVolume *mv : this->model_object()->volumes) {
+                if (!mv->is_model_part() || mv->ironing_facets.empty())
+                    continue;
+                const Transform3f tr = (this->trafo_centered() * mv->get_matrix()).cast<float>();
+                for (EnforcerBlockerType type : { EnforcerBlockerType::ENFORCER, EnforcerBlockerType::BLOCKER }) {
+                    const indexed_triangle_set facets = mv->ironing_facets.get_facets_strict(*mv, type);
+                    if (facets.indices.empty())
+                        continue;
+                    std::vector<Polygons> projected;
+                    project_triangles_to_slabs(this->layers(), facets, tr, true, projected);
+                    if (projected.empty())
+                        continue;
+                    std::vector<Polygons> &dst = (type == EnforcerBlockerType::ENFORCER) ? ironing_enforcers : ironing_blockers;
+                    for (size_t i = 0; i < projected.size(); ++i)
+                        append(dst[i], std::move(projected[i]));
+                }
+            }
+            for (size_t i = 0; i < m_layers.size(); ++i) {
+                m_layers[i]->m_ironing_enforcers = std::move(ironing_enforcers[i]);
+                m_layers[i]->m_ironing_blockers  = std::move(ironing_blockers[i]);
+            }
+        }
+
         tbb::parallel_for(
             // Ironing starting with layer 0 to support ironing all surfaces.
             tbb::blocked_range<size_t>(0, m_layers.size()),
