@@ -330,6 +330,23 @@ public:
     virtual bool can_reverse() const override { return false; }
 };
 
+// Non-planar ironing path: each polyline point carries its own absolute Z (mm, world space).
+// When z_positions is non-empty, GCode::_extrude emits G1 X Y Z moves instead of flat G1 X Y.
+class ExtrusionPathNonPlanar : public ExtrusionPath
+{
+public:
+    // One Z value per point in polyline.points.
+    std::vector<float> z_positions;
+
+    ExtrusionPathNonPlanar(ExtrusionPath&& rhs, std::vector<float>&& z_pos)
+        : ExtrusionPath(std::move(rhs)), z_positions(std::move(z_pos)) {}
+    ExtrusionPathNonPlanar(const ExtrusionPath& rhs, std::vector<float>&& z_pos)
+        : ExtrusionPath(rhs), z_positions(std::move(z_pos)) {}
+
+    ExtrusionEntity* clone()      const override { return new ExtrusionPathNonPlanar(*this); }
+    ExtrusionEntity* clone_move()       override { return new ExtrusionPathNonPlanar(std::move(*this)); }
+};
+
 typedef std::vector<ExtrusionPath> ExtrusionPaths;
 
 // Single continuous extrusion path, possibly with varying extrusion thickness, extrusion height or bridging / non bridging.

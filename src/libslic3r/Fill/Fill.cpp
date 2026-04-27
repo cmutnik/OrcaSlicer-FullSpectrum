@@ -1444,6 +1444,27 @@ Polylines Layer::generate_sparse_infill_polylines_for_anchoring(FillAdaptive::Oc
     return sparse_infill_polylines;
 }
 
+// Sample surface Z at (px, py) mm via barycentric interpolation within the ironing mesh triangles.
+// Returns fallback_z when (px, py) lies outside every triangle.
+static float sample_ironing_surface_z(float px, float py,
+                                       const indexed_triangle_set &mesh, float fallback_z)
+{
+    for (const auto &tri : mesh.indices) {
+        const Vec3f &a = mesh.vertices[tri(0)];
+        const Vec3f &b = mesh.vertices[tri(1)];
+        const Vec3f &c = mesh.vertices[tri(2)];
+        float denom = (b.y() - c.y()) * (a.x() - c.x()) + (c.x() - b.x()) * (a.y() - c.y());
+        if (std::abs(denom) < 1e-6f)
+            continue;
+        float u = ((b.y() - c.y()) * (px - c.x()) + (c.x() - b.x()) * (py - c.y())) / denom;
+        float v = ((c.y() - a.y()) * (px - c.x()) + (a.x() - c.x()) * (py - c.y())) / denom;
+        float w = 1.f - u - v;
+        if (u >= 0.f && v >= 0.f && w >= 0.f)
+            return u * a.z() + v * b.z() + w * c.z();
+    }
+    return fallback_z;
+}
+
 // Create ironing extrusions over top surfaces.
 void Layer::make_ironing()
 {
@@ -1672,6 +1693,28 @@ void Layer::make_ironing()
 		            eec->entities, std::move(polylines),
 		            erIroning,
 		            flow_mm3_per_mm, extrusion_width, float(extrusion_height));
+                // Non-planar ironing: lift each path's polyline points to the painted mesh surface Z.
+                const indexed_triangle_set &surf_mesh = this->object()->ironing_surface_mesh();
+                if (!surf_mesh.indices.empty()) {
+                    const float fallback_z = float(this->print_z);
+                    for (ExtrusionEntity *&ee : eec->entities) {
+                        ExtrusionPath *ep = dynamic_cast<ExtrusionPath*>(ee);
+                        if (ep == nullptr || dynamic_cast<ExtrusionPathNonPlanar*>(ep) != nullptr)
+                            continue;
+                        std::vector<float> z_positions;
+                        z_positions.reserve(ep->polyline.points.size());
+                        for (const Point &pt : ep->polyline.points) {
+                            float px = float(unscaled<double>(pt.x()));
+                            float py = float(unscaled<double>(pt.y()));
+                            z_positions.push_back(
+                                sample_ironing_surface_z(px, py, surf_mesh, fallback_z));
+                        }
+                        ExtrusionPathNonPlanar *np =
+                            new ExtrusionPathNonPlanar(std::move(*ep), std::move(z_positions));
+                        delete ee;
+                        ee = np;
+                    }
+                }
 		    }
 		}
 

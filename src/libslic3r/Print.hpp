@@ -475,6 +475,7 @@ public:
     bool                        is_mm_painted()         const { return this->model_object()->is_mm_painted(); }
     // Checks if the model object is painted using the fuzzy skin painting gizmo.
     bool                        is_fuzzy_skin_painted() const { return this->model_object()->is_fuzzy_skin_painted(); }
+    bool                        is_ironing_painted()    const { return this->model_object()->is_ironing_painted(); }
 
     // returns 0-based indices of extruders used to print the object (without brim, support and other helper extrusions)
     std::vector<unsigned int>   object_extruders() const;
@@ -606,14 +607,20 @@ private:
 
     PrintObject*                            m_shared_object{ nullptr };
 
-    
+    // World-space ENFORCER ironing triangles, built in ironing() before the parallel make_ironing() loop.
+    // Used by Layer::make_ironing() to lift ironing polyline points to the actual mesh surface Z
+    // (non-planar ironing).
+    indexed_triangle_set                    m_ironing_surface_mesh;
+
     // SoftFever
-    // 
+    //
     // object id
     size_t               m_id;
     void apply_conical_overhang();
 
  public:
+    const indexed_triangle_set& ironing_surface_mesh() const { return m_ironing_surface_mesh; }
+
     //BBS: When printing multi-material objects, this settings will make slicer to clip the overlapping object parts one by the other.
     //(2nd part will be clipped by the 1st, 3rd part will be clipped by the 1st and 2nd etc).
     // This was a per-object setting and now we default enable it.

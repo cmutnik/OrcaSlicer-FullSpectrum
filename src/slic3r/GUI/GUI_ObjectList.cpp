@@ -3841,6 +3841,56 @@ void ObjectList::update_info_items(size_t obj_idx, wxDataViewItemArray* selectio
             this->set_sinking_hidden(false);
         }
     }
+
+    // Fuzzy skin painting info item
+    {
+        wxDataViewItem item = m_objects_model->GetInfoItemByType(item_obj, InfoItemType::FuzzySkin);
+        bool shows = item.IsOk();
+        bool should_show = printer_technology() == ptFFF
+            && std::any_of(model_object->volumes.begin(), model_object->volumes.end(),
+                [](const ModelVolume* mv) { return !mv->fuzzy_skin_facets.empty(); });
+        if (!shows && should_show) {
+            m_objects_model->AddInfoChild(item_obj, InfoItemType::FuzzySkin);
+            Expand(item_obj);
+            if (added_object)
+                wxGetApp().notification_manager()->push_updated_item_info_notification(InfoItemType::FuzzySkin);
+        } else if (shows && !should_show) {
+            if (!selections) Unselect(item);
+            m_objects_model->Delete(item);
+            if (selections) {
+                if (selections->Index(item) != wxNOT_FOUND) {
+                    selections->Remove(item);
+                    if (selections->Index(item_obj) == wxNOT_FOUND) selections->Add(item_obj);
+                }
+            } else
+                Select(item_obj);
+        }
+    }
+
+    // Ironing painting info item
+    {
+        wxDataViewItem item = m_objects_model->GetInfoItemByType(item_obj, InfoItemType::Ironing);
+        bool shows = item.IsOk();
+        bool should_show = printer_technology() == ptFFF
+            && std::any_of(model_object->volumes.begin(), model_object->volumes.end(),
+                [](const ModelVolume* mv) { return !mv->ironing_facets.empty(); });
+        if (!shows && should_show) {
+            m_objects_model->AddInfoChild(item_obj, InfoItemType::Ironing);
+            Expand(item_obj);
+            if (added_object)
+                wxGetApp().notification_manager()->push_updated_item_info_notification(InfoItemType::Ironing);
+        } else if (shows && !should_show) {
+            if (!selections) Unselect(item);
+            m_objects_model->Delete(item);
+            if (selections) {
+                if (selections->Index(item) != wxNOT_FOUND) {
+                    selections->Remove(item);
+                    if (selections->Index(item_obj) == wxNOT_FOUND) selections->Add(item_obj);
+                }
+            } else
+                Select(item_obj);
+        }
+    }
 }
 
 void ObjectList::add_objects_to_list(std::vector<size_t> obj_idxs, bool call_selection_changed, bool notify_partplate, bool do_info_update)

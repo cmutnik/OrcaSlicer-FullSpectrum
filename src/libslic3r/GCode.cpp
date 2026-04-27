@@ -6786,7 +6786,8 @@ std::string GCode::_extrude(const ExtrusionPath& path, std::string description, 
     if (is_bridge(path.role()))
         description += " (bridge)";
 
-    const ExtrusionPathSloped* sloped = dynamic_cast<const ExtrusionPathSloped*>(&path);
+    const ExtrusionPathSloped*    sloped    = dynamic_cast<const ExtrusionPathSloped*>(&path);
+    const ExtrusionPathNonPlanar* nonplanar = dynamic_cast<const ExtrusionPathNonPlanar*>(&path);
 
     const auto get_sloped_z = [&sloped, this](double z_ratio) {
         const auto height = sloped->height;
@@ -7303,14 +7304,16 @@ std::string GCode::_extrude(const ExtrusionPath& path, std::string description, 
 
                 apply_role_based_fan_speed();
             }
-            // BBS: use G1 if not enable arc fitting or has no arc fitting result or in spiral_mode mode or we are doing sloped extrusion
+            // BBS: use G1 if not enable arc fitting or has no arc fitting result or in spiral_mode mode or we are doing sloped/non-planar extrusion
             // Attention: G2 and G3 is not supported in spiral_mode mode
-            if (!m_config.enable_arc_fitting || path.polyline.fitting_result.empty() || m_config.spiral_mode || sloped != nullptr) {
+            if (!m_config.enable_arc_fitting || path.polyline.fitting_result.empty() || m_config.spiral_mode || sloped != nullptr || nonplanar != nullptr) {
                 double path_length  = 0.;
                 double total_length = sloped == nullptr ? 0. : path.polyline.length() * SCALING_FACTOR;
+                size_t point_idx    = 0; // tracks line.b index in polyline.points (line i: a=points[i], b=points[i+1])
                 for (const Line& line : path.polyline.lines()) {
                     std::string  tempDescription = description;
                     const double line_length     = line.length() * SCALING_FACTOR;
+                    ++point_idx;
                     if (line_length < EPSILON)
                         continue;
                     path_length += line_length;
@@ -7323,7 +7326,13 @@ std::string GCode::_extrude(const ExtrusionPath& path, std::string description, 
                             tempDescription += Slic3r::format(" | Old Flow Value: %0.5f Length: %0.5f", oldE, line_length);
                         }
                     }
-                    if (sloped == nullptr) {
+                    if (nonplanar != nullptr && point_idx < nonplanar->z_positions.size()) {
+                        // Non-planar ironing: per-point Z from mesh surface
+                        Vec2d dest2d = this->point_to_gcode(line.b);
+                        Vec3d dest3d(dest2d(0), dest2d(1), (double)nonplanar->z_positions[point_idx]);
+                        gcode += m_writer.extrude_to_xyz(dest3d, dE, GCodeWriter::full_gcode_comment ? tempDescription : "",
+                                                         path.is_force_no_extrusion());
+                    } else if (sloped == nullptr) {
                         // Normal extrusion
                         gcode += m_writer.extrude_to_xy(this->point_to_gcode(line.b), dE,
                                                         GCodeWriter::full_gcode_comment ? tempDescription : "",

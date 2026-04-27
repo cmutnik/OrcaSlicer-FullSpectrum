@@ -574,6 +574,9 @@ void PrintObject::ironing()
         BOOST_LOG_TRIVIAL(debug) << "Ironing in parallel - start";
 
         // Project painted ironing enforcers and blockers onto per-layer polygons.
+        // Also accumulate world-space ENFORCER triangles into m_ironing_surface_mesh
+        // so that Layer::make_ironing() can lift ironing polyline points to the mesh surface Z.
+        m_ironing_surface_mesh = indexed_triangle_set{};
         {
             std::vector<Polygons> ironing_enforcers(m_layers.size());
             std::vector<Polygons> ironing_blockers(m_layers.size());
@@ -592,6 +595,14 @@ void PrintObject::ironing()
                     std::vector<Polygons> &dst = (type == EnforcerBlockerType::ENFORCER) ? ironing_enforcers : ironing_blockers;
                     for (size_t i = 0; i < projected.size(); ++i)
                         append(dst[i], std::move(projected[i]));
+                }
+                // Build world-space surface mesh from ENFORCER triangles for non-planar Z sampling.
+                {
+                    indexed_triangle_set enforcer_facets = mv->ironing_facets.get_facets_strict(*mv, EnforcerBlockerType::ENFORCER);
+                    if (!enforcer_facets.indices.empty()) {
+                        its_transform(enforcer_facets, tr);
+                        its_merge(m_ironing_surface_mesh, enforcer_facets);
+                    }
                 }
             }
             for (size_t i = 0; i < m_layers.size(); ++i) {
