@@ -14995,19 +14995,45 @@ void Plater::priv::apply_spectrum_color()
     if (obj_idx < 0)
         return;
 
-    // Build ordered list of 1-based filament IDs: physical first, then enabled mixed.
     auto* color_opt = wxGetApp().preset_bundle->project_config.option<ConfigOptionStrings>("filament_colour");
     if (!color_opt || color_opt->values.empty())
         return;
     const size_t num_physical = color_opt->values.size();
 
+    // Enable every non-deleted mixed filament so all visible color options are included.
+    auto* preset_bundle = wxGetApp().preset_bundle;
+    auto& mixed_mgr    = preset_bundle->mixed_filaments;
+    {
+        bool any_changed = false;
+        for (MixedFilament& mf : mixed_mgr.mixed_filaments()) {
+            if (!mf.deleted && !mf.enabled) {
+                mf.enabled  = true;
+                any_changed = true;
+            }
+        }
+        if (any_changed) {
+            const std::string serialized = mixed_mgr.serialize_custom_entries();
+            DynamicPrintConfig* print_cfg = &preset_bundle->prints.get_edited_preset().config;
+            if (auto* opt = print_cfg->option<ConfigOptionString>("mixed_filament_definitions"))
+                opt->value = serialized;
+            else
+                print_cfg->set_key_value("mixed_filament_definitions", new ConfigOptionString(serialized));
+            if (auto* opt = preset_bundle->project_config.option<ConfigOptionString>("mixed_filament_definitions"))
+                opt->value = serialized;
+            else
+                preset_bundle->project_config.set_key_value("mixed_filament_definitions", new ConfigOptionString(serialized));
+            sidebar->update_mixed_filament_panel(false);
+        }
+    }
+
+    // Build ordered list of 1-based filament IDs: physical first, then all enabled mixed.
     std::vector<unsigned int> filament_ids;
     filament_ids.reserve(num_physical + 8);
     for (unsigned int i = 1; i <= (unsigned int)num_physical; ++i)
         filament_ids.push_back(i);
 
     unsigned int next_virtual = (unsigned int)num_physical + 1;
-    for (const MixedFilament& mf : wxGetApp().preset_bundle->mixed_filaments.mixed_filaments()) {
+    for (const MixedFilament& mf : mixed_mgr.mixed_filaments()) {
         if (!mf.enabled || mf.deleted)
             continue;
         filament_ids.push_back(next_virtual++);
