@@ -4645,6 +4645,7 @@ private:
     MixedGradientSelector          *m_blend_selector = nullptr;
     wxStaticText                   *m_blend_label = nullptr;
     wxTextCtrl                     *m_pattern_ctrl = nullptr;
+    wxCheckBox                     *m_stripe_mode_checkbox = nullptr;
     wxCheckBox                     *m_local_z_limit_checkbox = nullptr;
     wxSpinCtrl                     *m_local_z_limit_spin = nullptr;
     wxSpinCtrlDouble               *m_surface_offset_spin = nullptr;
@@ -5843,8 +5844,9 @@ std::string MixedFilamentConfigPanel::summarize_local_z_breakdown(const MixedFil
     if (!normalized_pattern.empty())
         return "Local-Z breakdown: manual pattern rows do not use pair decomposition.";
 
-    if (mf.distribution_mode == int(MixedFilament::SameLayerPointillisme))
-        return "Local-Z breakdown: same-layer mode does not use local-Z pair decomposition.";
+    if (mf.distribution_mode == int(MixedFilament::SameLayerPointillisme) ||
+        mf.distribution_mode == int(MixedFilament::SameLayerRoundRobin))
+        return "Local-Z breakdown: same-layer stripe modes do not use local-Z pair decomposition.";
 
     auto pair_name = [](unsigned int a, unsigned int b) {
         std::ostringstream ss;
@@ -6093,16 +6095,14 @@ void MixedFilamentConfigPanel::build_ui()
     const int component_b = std::clamp(int(m_mf.component_b), 1, int(m_num_physical));
 
     const std::vector<unsigned int> initial_gradient_ids = decode_gradient_ids(m_mf.gradient_component_ids);
-    if (m_mf.distribution_mode == int(MixedFilament::SameLayerPointillisme)) {
-        m_mf.distribution_mode = initial_gradient_ids.size() >= 3 ? int(MixedFilament::LayerCycle) : int(MixedFilament::Simple);
-        m_mf.pointillism_all_filaments = false;
-    }
     const int stored_distribution_mode = std::clamp(m_mf.distribution_mode,
                                                     int(MixedFilament::LayerCycle),
-                                                    int(MixedFilament::Simple));
+                                                    int(MixedFilament::SameLayerRoundRobin));
+    const bool stored_same_layer = stored_distribution_mode == int(MixedFilament::SameLayerPointillisme) ||
+                                   stored_distribution_mode == int(MixedFilament::SameLayerRoundRobin);
     const int row_distribution_mode = initial_gradient_ids.size() >= 3 ?
         (stored_distribution_mode == int(MixedFilament::Simple) ? int(MixedFilament::LayerCycle) : stored_distribution_mode) :
-        int(MixedFilament::Simple);
+        (stored_same_layer ? int(MixedFilament::SameLayerPointillisme) : int(MixedFilament::Simple));
     m_mf.distribution_mode = row_distribution_mode;
     const bool multi_gradient_row = row_distribution_mode != int(MixedFilament::Simple) && initial_gradient_ids.size() >= 3;
     const int selection_c = initial_gradient_ids.size() >= 3 ? int(initial_gradient_ids[2]) : 0;
@@ -6319,15 +6319,30 @@ void MixedFilamentConfigPanel::build_ui()
         m_mf.component_b_surface_offset = initial_surface_offset_pair.second;
     }
 
+    const bool initial_same_layer_mode = row_distribution_mode == int(MixedFilament::SameLayerPointillisme) ||
+                                        row_distribution_mode == int(MixedFilament::SameLayerRoundRobin);
     const bool initial_component_surface_offsets_supported = m_bias_mode_enabled &&
                                                              !pattern_row_mode &&
-                                                             row_distribution_mode != int(MixedFilament::SameLayerPointillisme) &&
+                                                             !initial_same_layer_mode &&
                                                              !m_preview_settings.local_z_mode;
     if (m_surface_offset_spin)
         m_surface_offset_spin->Enable(initial_component_surface_offsets_supported);
 
-    const bool local_z_limit_supported = multi_gradient_row &&
-                                         row_distribution_mode != int(MixedFilament::SameLayerPointillisme);
+    // Stripe mode checkbox (shown for any non-pattern multi-component row).
+    if (!pattern_row_mode && (multi_gradient_row || !initial_gradient_ids.empty() ||
+        stored_distribution_mode == int(MixedFilament::SameLayerPointillisme) ||
+        stored_distribution_mode == int(MixedFilament::SameLayerRoundRobin))) {
+        m_stripe_mode_checkbox = new wxCheckBox(this, wxID_ANY, _L("Same-layer stripes"));
+        m_stripe_mode_checkbox->SetValue(initial_same_layer_mode);
+        m_stripe_mode_checkbox->SetForegroundColour(is_dark ? wxColour(236, 236, 236) : wxColour(20, 20, 20));
+        m_stripe_mode_checkbox->SetToolTip(
+            _L("Split each layer into parallel stripes and assign filaments across them.\n"
+               "For 2 components: alternates A/B stripes each layer.\n"
+               "For 3+ components: round-robin A→B→C stripes with per-layer phase shift."));
+        root->Add(m_stripe_mode_checkbox, 0, wxEXPAND | wxLEFT | wxRIGHT | wxTOP, gap);
+    }
+
+    const bool local_z_limit_supported = multi_gradient_row && !initial_same_layer_mode;
     if (local_z_limit_supported) {
         auto *local_z_limit_row = new wxBoxSizer(wxHORIZONTAL);
         m_local_z_limit_checkbox = new wxCheckBox(this, wxID_ANY, _L("Limit Local-Z"));
@@ -6439,7 +6454,15 @@ void MixedFilamentConfigPanel::build_ui()
             if (m_choice_d && m_choice_d->GetSelection() > 0)
                 add_unique(unsigned(m_choice_d->GetSelection()));
             const bool multi_gradient_mode = selected_ids.size() >= 3;
-            m_mf.distribution_mode = multi_gradient_mode ? int(MixedFilament::LayerCycle) : int(MixedFilament::Simple);
+            const bool want_stripe = m_stripe_mode_checkbox != nullptr && m_stripe_mode_checkbox->GetValue();
+            if (want_stripe) {
+                m_mf.distribution_mode = multi_gradient_mode ?
+                    int(MixedFilament::SameLayerRoundRobin) :
+                    int(MixedFilament::SameLayerPointillisme);
+            } else {
+                m_mf.distribution_mode = multi_gradient_mode ? int(MixedFilament::LayerCycle) : int(MixedFilament::Simple);
+            }
+            same_layer_mode = want_stripe;
             simple_mode = m_mf.distribution_mode == int(MixedFilament::Simple);
             m_mf.mix_b_percent = std::clamp(m_blend_selector ? m_blend_selector->value() : 50, 0, 100);
             m_mf.manual_pattern.clear();
@@ -6517,10 +6540,13 @@ void MixedFilamentConfigPanel::build_ui()
             m_mf.display_color = blend_from_sequence(m_physical_colors, preview_sequence, "#26A69A");
             if (m_blend_label) {
                 if (selected_gradient_ids.size() >= 3) {
-                    m_blend_label->SetLabel(wxString::Format(_L("%d-color layer cycle"), int(selected_gradient_ids.size())));
+                    m_blend_label->SetLabel(wxString::Format(
+                        same_layer_mode ? _L("%d-color stripe") : _L("%d-color layer cycle"),
+                        int(selected_gradient_ids.size())));
                 } else {
-                    m_blend_label->SetLabel(wxString::Format(simple_mode ? _L("Simple %d%%/%d%%") : _L("%d%%/%d%%"),
-                                                            100 - preview_mix_b_percent, preview_mix_b_percent));
+                    m_blend_label->SetLabel(wxString::Format(simple_mode ? _L("Simple %d%%/%d%%") :
+                                                               (same_layer_mode ? _L("Stripes %d%%/%d%%") : _L("%d%%/%d%%")),
+                                                               100 - preview_mix_b_percent, preview_mix_b_percent));
                 }
             }
         } else {
@@ -6628,6 +6654,8 @@ void MixedFilamentConfigPanel::build_ui()
         m_choice_d->Bind(wxEVT_CHOICE, [apply_changes](wxCommandEvent&) { apply_changes(); });
     if (m_blend_selector)
         m_blend_selector->Bind(wxEVT_SLIDER, [apply_changes](wxCommandEvent&) { apply_changes(); });
+    if (m_stripe_mode_checkbox)
+        m_stripe_mode_checkbox->Bind(wxEVT_CHECKBOX, [apply_changes](wxCommandEvent &) { apply_changes(); });
     if (m_local_z_limit_checkbox)
         m_local_z_limit_checkbox->Bind(wxEVT_CHECKBOX, [apply_changes](wxCommandEvent &) { apply_changes(); });
     if (m_local_z_limit_spin) {
@@ -6779,7 +6807,8 @@ void MixedFilamentConfigPanel::update_component_picker_visuals()
 void MixedFilamentConfigPanel::update_preview()
 {
     const bool simple_mode = m_mf.distribution_mode == int(MixedFilament::Simple);
-    const bool same_layer_mode = m_mf.distribution_mode == int(MixedFilament::SameLayerPointillisme);
+    const bool same_layer_mode = m_mf.distribution_mode == int(MixedFilament::SameLayerPointillisme) ||
+                                 m_mf.distribution_mode == int(MixedFilament::SameLayerRoundRobin);
     const std::string normalized_pattern = MixedFilamentManager::normalize_manual_pattern(m_mf.manual_pattern);
     const bool pattern_row_mode = !normalized_pattern.empty();
 

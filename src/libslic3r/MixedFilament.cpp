@@ -211,7 +211,7 @@ static int clamp_int(int v, int lo, int hi)
     return std::max(lo, std::min(hi, v));
 }
 
-static int normalize_distribution_mode_without_pointillism(int distribution_mode, const std::string &gradient_component_ids);
+static int normalize_distribution_mode(int distribution_mode, const std::string &gradient_component_ids);
 
 static float clamp_surface_offset(float v)
 {
@@ -517,7 +517,7 @@ static bool parse_row_definition(const std::string &row,
         if (tok[0] == 'm' || tok[0] == 'M') {
             int parsed_mode = distribution_mode;
             if (parse_int_token(tok.substr(1), parsed_mode))
-                distribution_mode = clamp_int(parsed_mode, int(MixedFilament::LayerCycle), int(MixedFilament::Simple));
+                distribution_mode = clamp_int(parsed_mode, int(MixedFilament::LayerCycle), int(MixedFilament::SameLayerRoundRobin));
             continue;
         }
         if (tok[0] == 'z' || tok[0] == 'Z') {
@@ -577,7 +577,7 @@ static bool parse_row_definition(const std::string &row,
         distribution_mode = int(MixedFilament::SameLayerPointillisme);
 #endif
     pointillism_all_filaments = false;
-    distribution_mode = normalize_distribution_mode_without_pointillism(distribution_mode, gradient_component_ids);
+    distribution_mode = normalize_distribution_mode(distribution_mode, gradient_component_ids);
     return true;
 }
 
@@ -706,20 +706,15 @@ static std::vector<unsigned int> decode_gradient_component_ids(const std::string
     return ids;
 }
 
-static int normalize_distribution_mode_without_pointillism(int distribution_mode, const std::string &gradient_component_ids)
+static int normalize_distribution_mode(int distribution_mode, const std::string & /*gradient_component_ids*/)
 {
-    const int clamped_mode = clamp_int(distribution_mode, int(MixedFilament::LayerCycle), int(MixedFilament::Simple));
-    if (clamped_mode != int(MixedFilament::SameLayerPointillisme))
-        return clamped_mode;
-
-    const size_t gradient_count = decode_gradient_component_ids(gradient_component_ids, 9).size();
-    return gradient_count >= 3 ? int(MixedFilament::LayerCycle) : int(MixedFilament::Simple);
+    return clamp_int(distribution_mode, int(MixedFilament::LayerCycle), int(MixedFilament::SameLayerRoundRobin));
 }
 
-static void disable_pointillism_mode(MixedFilament &mf)
+static void sanitize_distribution_mode(MixedFilament &mf)
 {
     mf.pointillism_all_filaments = false;
-    mf.distribution_mode = normalize_distribution_mode_without_pointillism(mf.distribution_mode, mf.gradient_component_ids);
+    mf.distribution_mode = normalize_distribution_mode(mf.distribution_mode, mf.gradient_component_ids);
 }
 
 static std::vector<int> parse_gradient_weight_tokens(const std::string &weights)
@@ -1322,7 +1317,9 @@ int mixed_filament_effective_local_z_preview_mix_b_percent(const MixedFilament  
         return std::clamp(mf.mix_b_percent, 0, 100);
 
     const std::string normalized_pattern = MixedFilamentManager::normalize_manual_pattern(mf.manual_pattern);
-    if (!normalized_pattern.empty() || mf.distribution_mode == int(MixedFilament::SameLayerPointillisme))
+    if (!normalized_pattern.empty() ||
+        mf.distribution_mode == int(MixedFilament::SameLayerPointillisme) ||
+        mf.distribution_mode == int(MixedFilament::SameLayerRoundRobin))
         return std::clamp(mf.mix_b_percent, 0, 100);
 
     const std::vector<unsigned int> gradient_ids = decode_gradient_component_ids(mf.gradient_component_ids, 9);
@@ -1393,7 +1390,8 @@ bool mixed_filament_supports_bias_apparent_color(const MixedFilament            
         return false;
     if (preview_settings.local_z_mode)
         return false;
-    if (mf.distribution_mode == int(MixedFilament::SameLayerPointillisme))
+    if (mf.distribution_mode == int(MixedFilament::SameLayerPointillisme) ||
+        mf.distribution_mode == int(MixedFilament::SameLayerRoundRobin))
         return false;
     if (!MixedFilamentManager::normalize_manual_pattern(mf.manual_pattern).empty())
         return false;
@@ -1459,7 +1457,8 @@ std::string compute_mixed_filament_display_color(const MixedFilament &entry, con
     }
 
     const int effective_mix_b = mixed_filament_effective_local_z_preview_mix_b_percent(entry, context.preview_settings);
-    const bool same_layer_mode = entry.distribution_mode == int(MixedFilament::SameLayerPointillisme);
+    const bool same_layer_mode = entry.distribution_mode == int(MixedFilament::SameLayerPointillisme) ||
+                                 entry.distribution_mode == int(MixedFilament::SameLayerRoundRobin);
     const std::vector<unsigned int> pair_sequence =
         build_effective_pair_preview_sequence(entry.component_a, entry.component_b, effective_mix_b, same_layer_mode);
     if (!pair_sequence.empty())
@@ -1684,7 +1683,7 @@ void MixedFilamentManager::apply_gradient_settings(int   gradient_mode,
     m_advanced_dithering = advanced_dithering;
 
     for (MixedFilament &mf : m_mixed) {
-        disable_pointillism_mode(mf);
+        sanitize_distribution_mode(mf);
         if (!mf.custom) {
             mf.ratio_a = 1;
             mf.ratio_b = 1;
@@ -1702,7 +1701,7 @@ std::string MixedFilamentManager::serialize_custom_entries()
         if (!first)
             ss << ';';
         first = false;
-        disable_pointillism_mode(mf);
+        sanitize_distribution_mode(mf);
         mf.stable_id = normalize_stable_id(mf.stable_id);
         const std::string normalized_ids = normalize_gradient_component_ids(mf.gradient_component_ids);
         const std::string normalized_weights = normalize_gradient_component_weights(mf.gradient_component_weights, normalized_ids.size());
@@ -1850,7 +1849,7 @@ void MixedFilamentManager::load_custom_entries(const std::string &serialized, co
                 mf.enabled = false;
             mf.custom = false;
             mf.origin_auto = true;
-            disable_pointillism_mode(mf);
+            sanitize_distribution_mode(mf);
 
             rebuilt.push_back(std::move(mf));
             consumed_auto_pairs.insert(key);
@@ -1882,7 +1881,7 @@ void MixedFilamentManager::load_custom_entries(const std::string &serialized, co
             mf.enabled = false;
         mf.custom = custom;
         mf.origin_auto = origin_auto;
-        disable_pointillism_mode(mf);
+        sanitize_distribution_mode(mf);
         rebuilt.push_back(std::move(mf));
         ++loaded_rows;
     }
@@ -2031,7 +2030,8 @@ unsigned int MixedFilamentManager::effective_painted_region_filament_id(unsigned
         return filament_id;
 
     const MixedFilament &mf = m_mixed[size_t(mixed_idx)];
-    if (mf.distribution_mode == int(MixedFilament::SameLayerPointillisme))
+    if (mf.distribution_mode == int(MixedFilament::SameLayerPointillisme) ||
+        mf.distribution_mode == int(MixedFilament::SameLayerRoundRobin))
         return filament_id;
 
     const std::string normalized_pattern = normalize_manual_pattern(mf.manual_pattern);
@@ -2065,7 +2065,8 @@ float MixedFilamentManager::component_surface_offset(unsigned int filament_id,
     if (mixed_row == nullptr)
         return 0.f;
 
-    if (mixed_row->distribution_mode == int(MixedFilament::SameLayerPointillisme))
+    if (mixed_row->distribution_mode == int(MixedFilament::SameLayerPointillisme) ||
+        mixed_row->distribution_mode == int(MixedFilament::SameLayerRoundRobin))
         return 0.f;
 
     const std::string normalized_pattern = normalize_manual_pattern(mixed_row->manual_pattern);

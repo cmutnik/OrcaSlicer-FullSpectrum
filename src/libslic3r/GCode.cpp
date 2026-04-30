@@ -3796,9 +3796,24 @@ static size_t unique_extruder_count_for_gcode(const std::vector<unsigned int>& s
 
 static std::vector<unsigned int> pointillism_sequence_for_row_for_gcode(const MixedFilament& mf, size_t num_physical)
 {
-#if 0
-    if (!mf.enabled || num_physical == 0 || mf.distribution_mode != int(MixedFilament::SameLayerPointillisme))
+    if (!mf.enabled || num_physical == 0)
         return {};
+
+    const bool is_pointillisme = mf.distribution_mode == int(MixedFilament::SameLayerPointillisme);
+    const bool is_round_robin  = mf.distribution_mode == int(MixedFilament::SameLayerRoundRobin);
+    if (!is_pointillisme && !is_round_robin)
+        return {};
+
+    if (is_round_robin) {
+        const std::vector<unsigned int> ids = decode_gradient_component_ids_for_gcode(mf, num_physical);
+        if (ids.size() >= 3)
+            return std::vector<unsigned int>(ids.begin(), ids.end());
+        if (mf.component_a >= 1 && mf.component_a <= num_physical &&
+            mf.component_b >= 1 && mf.component_b <= num_physical &&
+            mf.component_a != mf.component_b)
+            return { mf.component_a, mf.component_b };
+        return {};
+    }
 
     if (!mf.manual_pattern.empty())
         return decode_manual_pattern_sequence_for_gcode(mf, num_physical);
@@ -3857,10 +3872,6 @@ static std::vector<unsigned int> pointillism_sequence_for_row_for_gcode(const Mi
     if (!seen_a || !seen_b)
         return {};
     return sequence;
-#endif
-    (void)mf;
-    (void)num_physical;
-    return {};
 }
 
 static void split_polyline_by_length_for_pointillism(const Polyline& src,

@@ -19,9 +19,10 @@ namespace Slic3r {
 struct MixedFilament
 {
     enum DistributionMode : uint8_t {
-        LayerCycle = 0,
+        LayerCycle            = 0,
         SameLayerPointillisme = 1,
-        Simple = 2
+        Simple                = 2,
+        SameLayerRoundRobin   = 3,  // 3-colour phase-shifted stripe (A→B→C per layer)
     };
 
     // 1-based physical filament IDs that are combined.
