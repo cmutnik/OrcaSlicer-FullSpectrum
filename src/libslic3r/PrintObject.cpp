@@ -589,7 +589,7 @@ void PrintObject::ironing()
                     if (facets.indices.empty())
                         continue;
                     std::vector<Polygons> projected;
-                    project_triangles_to_slabs(this->layers(), facets, tr, true, projected);
+                    project_triangles_to_slabs(static_cast<const PrintObject*>(this)->layers(), facets, tr, true, projected);
                     if (projected.empty())
                         continue;
                     std::vector<Polygons> &dst = (type == EnforcerBlockerType::ENFORCER) ? ironing_enforcers : ironing_blockers;
