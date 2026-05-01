@@ -15046,7 +15046,9 @@ void Plater::priv::apply_spectrum_color()
     Plater::TakeSnapshot snapshot(q, "Apply Spectrum Color");
 
     ModelObject* obj = model.objects[obj_idx];
-    const BoundingBoxf3 bb = obj->bounding_box_approx();
+    // Use the object-local bounding box (volume transforms applied, instance transforms excluded)
+    // to match the coordinate space of vol_tf * vertex used in the loop below.
+    const BoundingBoxf3 bb = obj->raw_mesh_bounding_box();
     const double z_min   = bb.min.z();
     const double z_range = bb.max.z() - z_min;
 
