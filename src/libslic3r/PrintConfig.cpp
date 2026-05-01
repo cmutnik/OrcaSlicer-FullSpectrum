@@ -178,7 +178,8 @@ static t_config_enum_values s_keys_map_IroningType {
     { "no ironing",     int(IroningType::NoIroning) },
     { "top",            int(IroningType::TopSurfaces) },
     { "topmost",        int(IroningType::TopmostOnly) },
-    { "solid",          int(IroningType::AllSolid) }
+    { "solid",          int(IroningType::AllSolid) },
+    { "painted",        int(IroningType::Painted) }
 };
 CONFIG_OPTION_ENUM_DEFINE_STATIC_MAPS(IroningType)
 
@@ -3510,10 +3511,12 @@ void PrintConfigDef::init_fff_params()
     def->enum_values.push_back("top");
     def->enum_values.push_back("topmost");
     def->enum_values.push_back("solid");
+    def->enum_values.push_back("painted");
     def->enum_labels.push_back(L("No ironing"));
     def->enum_labels.push_back(L("Top surfaces"));
     def->enum_labels.push_back(L("Topmost surface"));
     def->enum_labels.push_back(L("All solid layer"));
+    def->enum_labels.push_back(L("Painted regions"));
     def->mode = comAdvanced;
     def->set_default_value(new ConfigOptionEnum<IroningType>(IroningType::NoIroning));
 

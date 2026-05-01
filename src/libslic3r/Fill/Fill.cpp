@@ -1546,11 +1546,12 @@ void Layer::make_ironing()
 		if (! layerm->slices.empty()) {
 			IroningParams ironing_params;
 			const PrintRegionConfig &config = layerm->region().config();
-			if (config.ironing_type != IroningType::NoIroning &&
+			if (config.ironing_type == IroningType::Painted ||
+			    (config.ironing_type != IroningType::NoIroning &&
 			    (config.ironing_type == IroningType::AllSolid ||
 				    ((config.top_shell_layers > 0 || (this->object()->print()->config().spiral_mode && config.bottom_shell_layers > 1)) &&
 					    (config.ironing_type == IroningType::TopSurfaces ||
-					        (config.ironing_type == IroningType::TopmostOnly && layerm->layer()->upper_layer == nullptr))))) {
+					        (config.ironing_type == IroningType::TopmostOnly && layerm->layer()->upper_layer == nullptr)))))) {
 				if (config.wall_filament == config.solid_infill_filament || config.wall_loops == 0) {
 					// Iron the whole face.
 					ironing_params.extruder = config.solid_infill_filament;
@@ -1612,48 +1613,52 @@ void Layer::make_ironing()
 			// Infill and perimeter.
 			// Merge top surfaces with the same ironing parameters.
 			Polygons polys;
-			Polygons infills;
-			for (size_t k = i; k < j; ++ k) {
-				const IroningParams		 &ironing_params  = by_extruder[k];
-				const PrintRegionConfig  &region_config   = ironing_params.layerm->region().config();
-				bool					  iron_everything = region_config.ironing_type == IroningType::AllSolid;
-				bool					  iron_completely = iron_everything;
-				if (iron_everything) {
-					// Check whether there is any non-solid hole in the regions.
-					bool internal_infill_solid = region_config.sparse_infill_density.value > 95.;
-					for (const Surface &surface : ironing_params.layerm->fill_surfaces.surfaces)
-						if ((!internal_infill_solid && surface.surface_type == stInternal) || surface.surface_type == stInternalBridge || surface.surface_type == stInternalVoid) {
-							// Some fill region is not quite solid. Don't iron over the whole surface.
-							iron_completely = false;
-							break;
-						}
-				}
-				if (iron_completely) {
-					// Iron everything. This is likely only good for solid transparent objects.
-					for (const Surface &surface : ironing_params.layerm->slices.surfaces)
-						polygons_append(polys, surface.expolygon);
-				} else {
-					for (const Surface &surface : ironing_params.layerm->slices.surfaces)
-						if ((surface.surface_type == stTop && (region_config.top_shell_layers > 0 || this->object()->print()->config().spiral_mode)) || (iron_everything && surface.surface_type == stBottom && region_config.bottom_shell_layers > 0))
-							// stBottomBridge is not being ironed on purpose, as it would likely destroy the bridges.
+			// For Painted mode, skip surface-type collection entirely — ironing_areas
+			// will be filled exclusively from the painted enforcer regions below.
+			if (ironing_params.layerm->region().config().ironing_type != IroningType::Painted) {
+				Polygons infills;
+				for (size_t k = i; k < j; ++ k) {
+					const IroningParams		 &ironing_params  = by_extruder[k];
+					const PrintRegionConfig  &region_config   = ironing_params.layerm->region().config();
+					bool					  iron_everything = region_config.ironing_type == IroningType::AllSolid;
+					bool					  iron_completely = iron_everything;
+					if (iron_everything) {
+						// Check whether there is any non-solid hole in the regions.
+						bool internal_infill_solid = region_config.sparse_infill_density.value > 95.;
+						for (const Surface &surface : ironing_params.layerm->fill_surfaces.surfaces)
+							if ((!internal_infill_solid && surface.surface_type == stInternal) || surface.surface_type == stInternalBridge || surface.surface_type == stInternalVoid) {
+								// Some fill region is not quite solid. Don't iron over the whole surface.
+								iron_completely = false;
+								break;
+							}
+					}
+					if (iron_completely) {
+						// Iron everything. This is likely only good for solid transparent objects.
+						for (const Surface &surface : ironing_params.layerm->slices.surfaces)
 							polygons_append(polys, surface.expolygon);
+					} else {
+						for (const Surface &surface : ironing_params.layerm->slices.surfaces)
+							if ((surface.surface_type == stTop && (region_config.top_shell_layers > 0 || this->object()->print()->config().spiral_mode)) || (iron_everything && surface.surface_type == stBottom && region_config.bottom_shell_layers > 0))
+								// stBottomBridge is not being ironed on purpose, as it would likely destroy the bridges.
+								polygons_append(polys, surface.expolygon);
+					}
+					if (iron_everything && ! iron_completely) {
+						// Add solid fill surfaces. This may not be ideal, as one will not iron perimeters touching these
+						// solid fill surfaces, but it is likely better than nothing.
+						for (const Surface &surface : ironing_params.layerm->fill_surfaces.surfaces)
+							if (surface.surface_type == stInternalSolid)
+								polygons_append(infills, surface.expolygon);
+					}
 				}
-				if (iron_everything && ! iron_completely) {
-					// Add solid fill surfaces. This may not be ideal, as one will not iron perimeters touching these
-					// solid fill surfaces, but it is likely better than nothing.
-					for (const Surface &surface : ironing_params.layerm->fill_surfaces.surfaces)
-						if (surface.surface_type == stInternalSolid)
-							polygons_append(infills, surface.expolygon);
-				}
-			}
 
-			if (! infills.empty() || j > i + 1) {
-				// Ironing over more than a single region or over solid internal infill.
-				if (! infills.empty())
-					// For IroningType::AllSolid only:
-					// Add solid infill areas for layers, that contain some non-ironable infil (sparse infill, bridge infill).
-					append(polys, std::move(infills));
-				polys = union_safety_offset(polys);
+				if (! infills.empty() || j > i + 1) {
+					// Ironing over more than a single region or over solid internal infill.
+					if (! infills.empty())
+						// For IroningType::AllSolid only:
+						// Add solid infill areas for layers, that contain some non-ironable infil (sparse infill, bridge infill).
+						append(polys, std::move(infills));
+					polys = union_safety_offset(polys);
+				}
 			}
 			ironing_areas = intersection_ex(polys, offset(this->lslices, - ironing_areas_offset));
 		}
