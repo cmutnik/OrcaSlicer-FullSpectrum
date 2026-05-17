@@ -83,9 +83,10 @@ public:
 		m_z_pos 				= print_z;
 		m_layer_height			= layer_height;
 		m_depth_traversed  = 0.f;
+        m_depth_traversed_by_group.clear();
         m_current_layer_finished = false;
 
-		
+
         // Advance m_layer_info iterator, making sure we got it right
 		while (!m_plan.empty() && m_layer_info->z < print_z - WT_EPSILON && m_layer_info+1 != m_plan.end())
 			++m_layer_info;
@@ -141,6 +142,7 @@ public:
     struct FilamentParameters {
         std::string 	    material = "PLA";
         bool                is_soluble = false;
+        int                 material_group = 0; // 0 = object, 1 = support (for prime tower zone separation)
         int  			    temperature = 0;
         int  			    first_layer_temperature = 0;
         float               loading_speed = 0.f;
@@ -228,6 +230,8 @@ private:
     float           m_extra_loading_move        = 0.f;
     float           m_bridging                  = 0.f;
     bool            m_no_sparse_layers          = false;
+    bool            m_separate_material_zones   = false; // Split prime tower into zones by material group
+    std::vector<float> m_depth_traversed_by_group;       // Per-group Y depth for material zone separation
     bool            m_set_extruder_trimpot      = false;
     bool            m_adhesion                  = true;
     GCodeFlavor     m_gcode_flavor;

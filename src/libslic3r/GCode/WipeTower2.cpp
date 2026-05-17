@@ -1,6 +1,7 @@
 // Orca: WipeTower2 for all non bbl printers, support all MMU device and toolchanger.
 #include "WipeTower2.hpp"
 
+#include <algorithm>
 #include <cassert>
 #include <iostream>
 #include <vector>
@@ -1291,6 +1292,7 @@ WipeTower2::WipeTower2(const PrintConfig&                     config,
     , m_z_pos(0.f)
     , m_bridging(float(config.wipe_tower_bridging))
     , m_no_sparse_layers(config.wipe_tower_no_sparse_layers)
+    , m_separate_material_zones(config.prime_tower_separate_material_zones)
     , m_gcode_flavor(config.gcode_flavor)
     , m_travel_speed(config.travel_speed)
     , m_infill_speed(default_region_config.sparse_infill_speed)
@@ -1365,6 +1367,7 @@ void WipeTower2::set_extruder(size_t idx, const PrintConfig& config)
     m_filpar[idx].material = config.filament_type.get_at(idx);
     m_filpar[idx].is_soluble = config.wipe_tower_filament == 0 ? config.filament_soluble.get_at(idx) :
                                (idx != size_t(config.wipe_tower_filament - 1));
+    m_filpar[idx].material_group = config.filament_is_support.get_at(idx) ? 1 : 0;
     m_filpar[idx].temperature = config.nozzle_temperature.get_at(idx);
     m_filpar[idx].first_layer_temperature              = config.nozzle_temperature_initial_layer.get_at(idx);
     m_filpar[idx].filament_minimal_purge_on_wipe_tower = config.filament_minimal_purge_on_wipe_tower.get_at(idx);
@@ -1555,9 +1558,31 @@ WipeTower::ToolChangeResult WipeTower2::emit_planned_tool_change(const WipeTower
         wipe_area   = tool_change->required_depth;
     }
 
-    WipeTower::box_coordinates cleaning_box(Vec2f(m_perimeter_width / 2.f, m_perimeter_width / 2.f), m_wipe_tower_width - m_perimeter_width,
-                                            (!is_no_tool_sentinel(tool) ? wipe_area + m_depth_traversed - 0.5f * m_perimeter_width :
-                                                                          m_wipe_tower_depth - m_perimeter_width));
+    // Material zone separation: restrict cleaning_box to material group's horizontal section
+    int   current_group      = 0;
+    float group_x_start      = 0.f;
+    float group_section_width = m_wipe_tower_width;
+    if (m_separate_material_zones) {
+        int max_group = 0;
+        for (const auto& fp : m_filpar)
+            max_group = std::max(max_group, fp.material_group);
+        int num_groups = max_group + 1;
+        if (num_groups > 1) {
+            size_t ref_tool = !is_no_tool_sentinel(tool) ? tool : m_current_tool;
+            if (ref_tool < m_filpar.size())
+                current_group = m_filpar[ref_tool].material_group;
+            m_depth_traversed_by_group.resize(num_groups, 0.f);
+            m_depth_traversed    = m_depth_traversed_by_group[current_group];
+            group_section_width  = m_wipe_tower_width / num_groups;
+            group_x_start        = current_group * group_section_width;
+        }
+    }
+
+    WipeTower::box_coordinates cleaning_box(
+        Vec2f(group_x_start + m_perimeter_width / 2.f, m_perimeter_width / 2.f),
+        group_section_width - m_perimeter_width,
+        (!is_no_tool_sentinel(tool) ? wipe_area + m_depth_traversed - 0.5f * m_perimeter_width :
+                                      m_wipe_tower_depth - m_perimeter_width));
 
     WipeTowerWriter2 writer(m_layer_height, m_perimeter_width, m_gcode_flavor, m_filpar, m_enable_arc_fitting, m_printer_model);
     writer.set_extrusion_flow(m_extrusion_flow)
@@ -1608,7 +1633,12 @@ WipeTower::ToolChangeResult WipeTower2::emit_planned_tool_change(const WipeTower
                           m_filpar[m_current_tool].temperature);
 
     m_active_tool_change = nullptr;
-    m_depth_traversed += wipe_area;
+    if (m_separate_material_zones && !m_depth_traversed_by_group.empty()) {
+        m_depth_traversed_by_group[current_group] += wipe_area;
+        m_depth_traversed = *std::max_element(m_depth_traversed_by_group.begin(), m_depth_traversed_by_group.end());
+    } else {
+        m_depth_traversed += wipe_area;
+    }
 
     if (m_set_extruder_trimpot)
         writer.set_extruder_trimpot(550); // Reset the extruder current to a normal value.

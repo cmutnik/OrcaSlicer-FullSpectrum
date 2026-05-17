@@ -186,6 +186,7 @@ public:
 		m_z_pos 				= print_z;
 		m_layer_height			= layer_height;
 		m_depth_traversed  = 0.f;
+        m_depth_traversed_by_group.clear();
         m_current_layer_finished = false;
 		//m_current_shape = (! is_first_layer && m_current_shape == SHAPE_NORMAL) ? SHAPE_REVERSED : SHAPE_NORMAL;
 		m_current_shape = SHAPE_NORMAL;
@@ -253,6 +254,7 @@ public:
         bool                is_soluble = false;
         // BBS
         bool                is_support = false;
+        int                 material_group = 0; // 0 = object, 1 = support (for prime tower zone separation)
         int  			    nozzle_temperature = 0;
         int  			    nozzle_temperature_initial_layer = 0;
         float               loading_speed = 0.f;
@@ -312,6 +314,8 @@ private:
     float           m_extra_loading_move        = 0.f;
     float           m_bridging                  = 0.f;
     bool            m_no_sparse_layers          = false;
+    bool            m_separate_material_zones   = false; // Split prime tower into zones by material group
+    std::vector<float> m_depth_traversed_by_group;       // Per-group Y depth for material zone separation
     bool            m_set_extruder_trimpot      = false;
     bool            m_adhesion                  = true;
     GCodeFlavor     m_gcode_flavor;

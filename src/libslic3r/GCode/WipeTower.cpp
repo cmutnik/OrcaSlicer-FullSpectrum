@@ -1,5 +1,6 @@
 #include "WipeTower.hpp"
 
+#include <algorithm>
 #include <cassert>
 #include <iostream>
 #include <vector>
@@ -616,6 +617,7 @@ WipeTower::WipeTower(const PrintConfig& config, int plate_idx, Vec3d plate_origi
     //m_bridging(float(config.wipe_tower_bridging)),
     m_bridging(10.f),
     m_no_sparse_layers(config.wipe_tower_no_sparse_layers),
+    m_separate_material_zones(config.prime_tower_separate_material_zones),
     m_gcode_flavor(config.gcode_flavor),
     m_travel_speed(config.travel_speed),
     m_current_tool(initial_tool),
@@ -678,6 +680,7 @@ void WipeTower::set_extruder(size_t idx, const PrintConfig& config)
     m_filpar[idx].is_soluble = config.wipe_tower_filament == 0 ? config.filament_soluble.get_at(idx) : (idx != size_t(config.wipe_tower_filament - 1));
     // BBS
     m_filpar[idx].is_support = config.filament_is_support.get_at(idx);
+    m_filpar[idx].material_group = m_filpar[idx].is_support ? 1 : 0;
     m_filpar[idx].nozzle_temperature = config.nozzle_temperature.get_at(idx);
     m_filpar[idx].nozzle_temperature_initial_layer = config.nozzle_temperature_initial_layer.get_at(idx);
 
@@ -760,9 +763,29 @@ WipeTower::ToolChangeResult WipeTower::tool_change(size_t tool, bool extrude_per
 		// Otherwise we are going to Unload only. And m_layer_info would be invalid.
 	}
 
+    // Material zone separation: restrict cleaning_box to material group's horizontal section
+    int   current_group       = 0;
+    float group_x_start       = 0.f;
+    float group_section_width = m_wipe_tower_width;
+    if (m_separate_material_zones) {
+        int max_group = 0;
+        for (const auto& fp : m_filpar)
+            max_group = std::max(max_group, fp.material_group);
+        int num_groups = max_group + 1;
+        if (num_groups > 1) {
+            size_t ref_tool = (tool != (unsigned int)(-1)) ? tool : m_current_tool;
+            if (ref_tool < m_filpar.size())
+                current_group = m_filpar[ref_tool].material_group;
+            m_depth_traversed_by_group.resize(num_groups, 0.f);
+            m_depth_traversed    = m_depth_traversed_by_group[current_group];
+            group_section_width  = m_wipe_tower_width / num_groups;
+            group_x_start        = current_group * group_section_width;
+        }
+    }
+
     box_coordinates cleaning_box(
-		Vec2f(m_perimeter_width, m_perimeter_width),
-		m_wipe_tower_width - 2 * m_perimeter_width,
+		Vec2f(group_x_start + m_perimeter_width, m_perimeter_width),
+		group_section_width - 2 * m_perimeter_width,
         (tool != (unsigned int)(-1) ? wipe_depth + m_depth_traversed - m_perimeter_width
                                     : m_wipe_tower_depth - m_perimeter_width));
 
@@ -837,7 +860,12 @@ WipeTower::ToolChangeResult WipeTower::tool_change(size_t tool, bool extrude_per
     } else
         toolchange_Unload(writer, cleaning_box, m_filpar[m_current_tool].material, m_filpar[m_current_tool].nozzle_temperature);
 
-    m_depth_traversed += wipe_depth;
+    if (m_separate_material_zones && !m_depth_traversed_by_group.empty()) {
+        m_depth_traversed_by_group[current_group] += wipe_depth;
+        m_depth_traversed = *std::max_element(m_depth_traversed_by_group.begin(), m_depth_traversed_by_group.end());
+    } else {
+        m_depth_traversed += wipe_depth;
+    }
 
     //BBS
 	//if (m_set_extruder_trimpot)

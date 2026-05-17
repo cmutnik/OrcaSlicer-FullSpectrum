@@ -5956,6 +5956,13 @@ void PrintConfigDef::init_fff_params()
     def->min = 0.;
     def->set_default_value(new ConfigOptionFloat(4.0));
 
+    def = this->add("prime_tower_separate_material_zones", coBool);
+    def->label = L("Separate material zones");
+    def->tooltip = L("Divides the prime tower into separate horizontal zones for support and object materials. "
+                     "Prevents tower delamination when incompatible materials (e.g. TPU and PLA) are used together.");
+    def->mode = comAdvanced;
+    def->set_default_value(new ConfigOptionBool(false));
+
     def = this->add("wipe_tower_cone_angle", coFloat);
     def->label = L("Stabilization cone apex angle");
     def->tooltip = L("Angle at the apex of the cone that is used to stabilize the wipe tower. "
